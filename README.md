@@ -19,7 +19,7 @@ functions/
 .dev.vars          local secrets (git-ignored)
 ```
 
-- **Audio formats.** The browser records in the first format it supports that Gemini also accepts: WebM/Opus (Chrome, Firefox), Ogg, then MP4/AAC (Safari/iOS, sent to Gemini as `audio/m4a`). If none of those work, the browser's own recording is converted to 16 kHz mono WAV before upload. The upload is the raw audio, with its MIME type in the `Content-Type` header.
+- **Audio formats.** The browser records in the first format it supports that Gemini also accepts: WebM/Opus (Chrome, Firefox), Ogg, then MP4/AAC (Safari/iOS, sent to Gemini as `audio/m4a`). If none of those work, the browser's own recording is converted to 16 kHz mono WAV before upload. The upload is the raw audio, with its MIME type in the `Content-Type` header. Yes
 - **Size limit.** Gemini accepts up to 20 MB per request with inline audio, and that limit counts the audio after base64 encoding. So `/api/dump` rejects audio over about 15 MB with a clear message. A 10-minute recording at the 64 kbps the app uses is about 5 MB. The WAV fallback is much bigger (about 1.9 MB per minute), so it can only take about 7½ minutes.
 - **Model.** The default is `gemini-3.6-flash`, the current stable Flash model with audio input and a free tier. Set `GEMINI_MODEL` to switch models without changing code.
 - **API key.** Only the Pages Function reads `GEMINI_API_KEY`. The function sends it to Gemini in the `x-goog-api-key` header and never in a URL. Error messages are scrubbed in case they contain the key.
