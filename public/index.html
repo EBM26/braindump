@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Brain Dump</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1>Brain Dump</h1>
+    </header>
+
+    <!-- Recorder: idle / recording / processing -->
+    <section class="recorder" id="recorder" aria-live="polite">
+      <button type="button" class="record-btn" id="recordBtn" aria-label="Start recording">
+        <span class="record-btn__icon" aria-hidden="true"></span>
+      </button>
+      <p class="recorder__status" id="status">Tap to record</p>
+      <p class="recorder__timer" id="timer" hidden>0:00 <span class="muted">/ 10:00</span></p>
+      <div class="spinner" id="spinner" hidden aria-hidden="true"></div>
+    </section>
+
+    <!-- Error -->
+    <section class="error" id="error" role="alert" hidden>
+      <p class="error__message" id="errorMessage"></p>
+      <div class="actions">
+        <button type="button" class="btn btn--primary" id="retryBtn">Retry</button>
+        <button type="button" class="btn" id="discardBtn">Discard &amp; record again</button>
+      </div>
+    </section>
+
+    <!-- Result -->
+    <section class="result" id="result" hidden>
+      <div class="actions">
+        <button type="button" class="btn btn--primary" id="copyBtn">Copy all</button>
+        <button type="button" class="btn" id="newBtn">New recording</button>
+      </div>
+      <div id="resultBody"></div>
+      <details class="transcript" id="transcriptBox">
+        <summary>Full transcript</summary>
+        <p id="transcript"></p>
+      </details>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

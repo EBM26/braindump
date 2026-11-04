@@ -1,0 +1,12 @@
+{
+  "name": "brain-dump",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice brain dump organized by Gemini. Phase 1: core loop.",
+  "scripts": {
+    "dev": "wrangler pages dev public --compatibility-date=2026-10-01"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

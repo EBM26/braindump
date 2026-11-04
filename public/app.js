@@ -1,0 +1,384 @@
+"use strict";
+
+// ---------- Config ----------
+
+const MAX_SECONDS = 10 * 60; // recording cap; auto-stop here
+const REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
+
+// Recording formats in order of preference. `record` is what we ask MediaRecorder for;
+// `send` is the MIME type Gemini documents as supported for that format.
+// Safari/iOS records AAC in an MP4 container, which is the .m4a format, so it is sent as audio/m4a.
+const FORMATS = [
+  { record: "audio/webm;codecs=opus", send: "audio/webm" },
+  { record: "audio/webm", send: "audio/webm" },
+  { record: "audio/ogg;codecs=opus", send: "audio/ogg" },
+  { record: "audio/ogg", send: "audio/ogg" },
+  { record: "audio/mp4;codecs=mp4a.40.2", send: "audio/m4a" },
+  { record: "audio/mp4", send: "audio/m4a" },
+  { record: "audio/aac", send: "audio/aac" },
+];
+
+const SECTIONS = [
+  { key: "tasks", title: "Tasks" },
+  { key: "ideas", title: "Ideas" },
+  { key: "open_questions", title: "Open questions" },
+  { key: "notes", title: "Notes" },
+];
+
+// ---------- Elements ----------
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  recorder: $("recorder"),
+  recordBtn: $("recordBtn"),
+  status: $("status"),
+  timer: $("timer"),
+  spinner: $("spinner"),
+  error: $("error"),
+  errorMessage: $("errorMessage"),
+  retryBtn: $("retryBtn"),
+  discardBtn: $("discardBtn"),
+  result: $("result"),
+  resultBody: $("resultBody"),
+  transcript: $("transcript"),
+  transcriptBox: $("transcriptBox"),
+  copyBtn: $("copyBtn"),
+  newBtn: $("newBtn"),
+};
+
+// ---------- State (memory only; nothing is stored) ----------
+
+let mediaRecorder = null;
+let stream = null;
+let chunks = [];
+let timerId = null;
+let startedAt = 0;
+let pending = null; // { blob, mimeType } kept until a successful result, for Retry
+let lastResult = null;
+
+// ---------- Recording ----------
+
+function pickFormat() {
+  if (typeof MediaRecorder.isTypeSupported !== "function") return null;
+  return FORMATS.find((f) => MediaRecorder.isTypeSupported(f.record)) || null;
+}
+
+async function startRecording() {
+  if (!window.isSecureContext || !navigator.mediaDevices || !window.MediaRecorder) {
+    showError("Recording isn't available here. The microphone needs HTTPS (or localhost) and a browser with MediaRecorder support.", false);
+    return;
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+    showError(denied
+      ? "Microphone access was blocked. Allow it in your browser settings and try again."
+      : `Couldn't start the microphone: ${err && err.message ? err.message : err}`, false);
+    return;
+  }
+
+  const format = pickFormat();
+  const options = { audioBitsPerSecond: 64000 };
+  if (format) options.mimeType = format.record;
+
+  try {
+    mediaRecorder = new MediaRecorder(stream, options);
+  } catch {
+    mediaRecorder = new MediaRecorder(stream); // browser default; converted to WAV later if needed
+  }
+
+  chunks = [];
+  pending = null;
+  lastResult = null;
+  mediaRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  });
+  mediaRecorder.addEventListener("stop", onRecordingStopped, { once: true });
+  mediaRecorder.start(1000);
+
+  startedAt = Date.now();
+  timerId = setInterval(tick, 250);
+  tick();
+  setView("recording");
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+}
+
+function tick() {
+  const seconds = Math.min(MAX_SECONDS, Math.floor((Date.now() - startedAt) / 1000));
+  els.timer.firstChild.nodeValue = `${formatTime(seconds)} `;
+  if (seconds >= MAX_SECONDS) stopRecording();
+}
+
+async function onRecordingStopped() {
+  clearInterval(timerId);
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+
+  const recordedType = mediaRecorder.mimeType || (chunks[0] && chunks[0].type) || "";
+  const blob = new Blob(chunks, { type: recordedType });
+  chunks = [];
+  mediaRecorder = null;
+
+  if (blob.size === 0) {
+    showError("Nothing was recorded. Try again.", false);
+    return;
+  }
+
+  setView("processing", "Processing…");
+  try {
+    pending = await prepareUpload(blob, recordedType);
+  } catch (err) {
+    showError(`Couldn't prepare the recording: ${err && err.message ? err.message : err}`, false);
+    return;
+  }
+  send();
+}
+
+// Map what the browser actually recorded to a Gemini-supported type; convert to WAV if there's no match.
+async function prepareUpload(blob, recordedType) {
+  const base = recordedType.split(";")[0].trim().toLowerCase();
+  const match = FORMATS.find((f) => f.record.split(";")[0] === base);
+  if (match) return { blob, mimeType: match.send };
+
+  setView("processing", "Converting audio…");
+  const wav = await convertToWav16kMono(blob);
+  return { blob: wav, mimeType: "audio/wav" };
+}
+
+async function convertToWav16kMono(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  } finally {
+    ctx.close();
+  }
+
+  const rate = 16000;
+  const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded; // multichannel is down-mixed to mono by the 1-channel destination
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  return encodeWav(rendered.getChannelData(0), rate);
+}
+
+function encodeWav(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, s) => { for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i)); };
+
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);         // fmt chunk size
+  view.setUint16(20, 1, true);          // PCM
+  view.setUint16(22, 1, true);          // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true);          // block align
+  view.setUint16(34, 16, true);         // bits per sample
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+// ---------- Upload ----------
+
+async function send() {
+  if (!pending) return;
+  setView("processing", "Processing…");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let res;
+  try {
+    res = await fetch("/api/dump", {
+      method: "POST",
+      headers: { "Content-Type": pending.mimeType },
+      body: pending.blob,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    showError(err && err.name === "AbortError"
+      ? "The request timed out. Check your connection and retry."
+      : "Network error — couldn't reach the server. Check your connection and retry.", true);
+    return;
+  }
+  clearTimeout(timeout);
+
+  let data = null;
+  try { data = await res.json(); } catch { /* handled below */ }
+
+  if (!res.ok || !data || data.error) {
+    const message = (data && data.error) || `Server error (HTTP ${res.status}).`;
+    showError(message, true);
+    return;
+  }
+
+  pending = null; // success — release the recording
+  lastResult = data;
+  renderResult(data);
+  setView("result");
+}
+
+// ---------- Rendering ----------
+
+function renderResult(data) {
+  const body = els.resultBody;
+  body.replaceChildren();
+
+  const nothing = !data.summary && SECTIONS.every((s) => !data[s.key].length);
+
+  const summary = section("Summary");
+  const p = document.createElement("p");
+  if (nothing) {
+    p.className = "empty";
+    p.textContent = "Nothing intelligible came through. Try recording again.";
+  } else {
+    p.textContent = data.summary;
+  }
+  summary.append(p);
+  body.append(summary);
+
+  for (const { key, title } of SECTIONS) {
+    const items = data[key];
+    if (!items.length) continue;
+    const sec = section(title);
+    const ul = document.createElement("ul");
+    ul.className = "items";
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.append(document.createTextNode(item.text));
+      if (item.project) li.append(tag(item.project));
+      if (item.due) li.append(tag(`due: ${item.due}`, "tag--due"));
+      ul.append(li);
+    }
+    sec.append(ul);
+    body.append(sec);
+  }
+
+  els.transcript.textContent = data.transcript || "(empty)";
+  els.transcriptBox.open = false;
+}
+
+function section(title) {
+  const sec = document.createElement("section");
+  sec.className = "section";
+  const h = document.createElement("h2");
+  h.textContent = title;
+  sec.append(h);
+  return sec;
+}
+
+function tag(text, extraClass) {
+  const span = document.createElement("span");
+  span.className = extraClass ? `tag ${extraClass}` : "tag";
+  span.textContent = text;
+  return span;
+}
+
+function resultAsText(data) {
+  const lines = ["SUMMARY", data.summary || "(none)"];
+  for (const { key, title } of SECTIONS) {
+    const items = data[key];
+    if (!items.length) continue;
+    lines.push("", title.toUpperCase());
+    for (const item of items) {
+      let line = `- ${item.text}`;
+      if (item.project) line += ` [${item.project}]`;
+      if (item.due) line += ` (due: ${item.due})`;
+      lines.push(line);
+    }
+  }
+  return lines.join("\n");
+}
+
+async function copyAll() {
+  if (!lastResult) return;
+  const text = resultAsText(lastResult);
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.append(ta);
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+  }
+  els.copyBtn.textContent = ok ? "Copied!" : "Copy failed";
+  setTimeout(() => { els.copyBtn.textContent = "Copy all"; }, 1800);
+}
+
+// ---------- View state ----------
+
+function setView(view, statusText) {
+  const recording = view === "recording";
+  const processing = view === "processing";
+
+  els.recorder.classList.toggle("is-recording", recording);
+  els.recordBtn.disabled = processing;
+  els.recordBtn.setAttribute("aria-label", recording ? "Stop recording" : "Start recording");
+  els.recordBtn.hidden = view === "result";
+  els.timer.hidden = !recording;
+  els.spinner.hidden = !processing;
+
+  els.status.hidden = view === "result";
+  els.status.textContent =
+    recording ? "Recording — tap to stop" :
+    processing ? (statusText || "Processing…") :
+    "Tap to record";
+
+  els.error.hidden = view !== "error";
+  els.result.hidden = view !== "result";
+}
+
+function showError(message, canRetry) {
+  els.errorMessage.textContent = message;
+  els.retryBtn.hidden = !(canRetry && pending);
+  els.discardBtn.textContent = pending ? "Discard & record again" : "Dismiss";
+  setView("error");
+  els.recordBtn.hidden = !!pending; // with a recording waiting, Retry/Discard are the choices
+  els.status.hidden = !!pending;
+}
+
+function formatTime(total) {
+  const m = Math.floor(total / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+// ---------- Events ----------
+
+els.recordBtn.addEventListener("click", () => {
+  if (mediaRecorder && mediaRecorder.state === "recording") stopRecording();
+  else startRecording();
+});
+els.retryBtn.addEventListener("click", send);
+els.discardBtn.addEventListener("click", () => { pending = null; setView("idle"); });
+els.copyBtn.addEventListener("click", copyAll);
+els.newBtn.addEventListener("click", () => { lastResult = null; setView("idle"); });
+
+setView("idle");
