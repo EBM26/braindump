@@ -1,6 +1,13 @@
 // POST /api/dump
 // Body: the raw recorded audio. Content-Type header: its MIME type (e.g. audio/webm).
-// Sends the audio + organizing prompt to Gemini and returns the organized JSON.
+//
+// Bad input → a plain JSON error ({ error }) with a 4xx/5xx status.
+// Valid input → 200 with a text/event-stream. Each event is `data: <json>`:
+//   { type: "status", state: "retrying", attempt, maxRetries, waitSeconds, model }
+//   { type: "status", state: "fallback", model }
+//   { type: "result", data: { transcript, summary, tasks, ... } }   ← final
+//   { type: "error", error: "readable message" }                     ← final
+// The stream lets the page say "Gemini is busy, retrying…" while the function waits.
 
 import { PROMPT } from "../prompt.js";
 
@@ -8,6 +15,14 @@ import { PROMPT } from "../prompt.js";
 // (checked against ai.google.dev / aistudio.google.com docs, Nov 2026).
 // Override with the GEMINI_MODEL env var.
 const DEFAULT_MODEL = "gemini-3.6-flash";
+
+// Used once after the main model's retries are exhausted. Current stable Flash-Lite
+// with audio input and structured output (docs, Nov 2026). Override with GEMINI_FALLBACK_MODEL.
+const DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+
+// Gemini "busy" responses worth retrying: 429 (rate limit / quota) and 503 (overloaded).
+const RETRYABLE_STATUSES = new Set([429, 503]);
+const RETRY_DELAYS_MS = [2000, 5000, 10000]; // up to 3 retries after the first try
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -62,6 +77,7 @@ export async function onRequest({ request, env }) {
     return jsonError(500, "Server is missing GEMINI_API_KEY. Add it to .dev.vars (local) or the Pages project settings.");
   }
   const model = (env.GEMINI_MODEL || "").trim() || DEFAULT_MODEL;
+  const fallbackModel = (env.GEMINI_FALLBACK_MODEL || "").trim() || DEFAULT_FALLBACK_MODEL;
 
   // --- Validate the incoming audio ---
   const mimeType = normalizeMimeType(request.headers.get("Content-Type"));
@@ -85,13 +101,14 @@ export async function onRequest({ request, env }) {
     return tooLarge(audio.byteLength);
   }
 
-  // --- Call Gemini ---
-  const body = {
+  // --- Build the Gemini request once; every attempt (and the fallback) reuses it ---
+  // The model is in the URL, not the body, so the same body works for both models.
+  const requestBody = JSON.stringify({
     contents: [
       {
         role: "user",
         parts: [
-          { inlineData: { mimeType, data: toBase64(audio) } },
+          { inlineData: { mimeType, data: toBase64(audio) } }, // base64-encoded exactly once
           { text: PROMPT },
         ],
       },
@@ -100,38 +117,111 @@ export async function onRequest({ request, env }) {
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
     },
+  });
+
+  // --- Stream status events while retrying, then the final result or error ---
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  // Not awaited: a write only settles once the browser reads it. If the browser
+  // has gone away, writes fail and are ignored.
+  const sendEvent = (event) => {
+    writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)).catch(() => {});
   };
 
+  (async () => {
+    try {
+      const outcome = await organizeWithRetries({
+        apiKey, model, fallbackModel, requestBody,
+        onStatus: (status) => sendEvent({ type: "status", ...status }),
+      });
+      sendEvent(outcome.ok ? { type: "result", data: outcome.value } : { type: "error", error: outcome.message });
+    } catch (err) {
+      sendEvent({ type: "error", error: `Unexpected server error: ${scrub(String(err && err.message || err), apiKey)}` });
+    } finally {
+      writer.close().catch(() => {});
+    }
+  })();
+
+  return new Response(readable, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+    },
+  });
+}
+
+// ---------- Gemini calls ----------
+
+// Main model: first try + up to 3 retries on 429/503 (waiting ~2s, 5s, 10s).
+// If it's still busy after that, one try with the fallback model. Other errors fail immediately.
+async function organizeWithRetries({ apiKey, model, fallbackModel, requestBody, onStatus }) {
+  let last = await callGemini(model, requestBody, apiKey);
+
+  for (let i = 0; i < RETRY_DELAYS_MS.length && isBusy(last); i++) {
+    onStatus({
+      state: "retrying",
+      attempt: i + 1,
+      maxRetries: RETRY_DELAYS_MS.length,
+      waitSeconds: RETRY_DELAYS_MS[i] / 1000,
+      model,
+    });
+    await sleep(RETRY_DELAYS_MS[i]);
+    last = await callGemini(model, requestBody, apiKey);
+  }
+
+  if (!isBusy(last)) return last; // success, or a non-retryable error
+
+  onStatus({ state: "fallback", model: fallbackModel });
+  const fallback = await callGemini(fallbackModel, requestBody, apiKey);
+  if (fallback.ok) return fallback;
+
+  return {
+    ok: false,
+    message:
+      `Gemini is busy. ${model} failed ${RETRY_DELAYS_MS.length + 1} times (${last.message}), ` +
+      `and the fallback model ${fallbackModel} also failed (${fallback.message}). Try again in a minute.`,
+  };
+}
+
+function isBusy(outcome) {
+  return !outcome.ok && RETRYABLE_STATUSES.has(outcome.status);
+}
+
+// One generateContent call. Returns { ok: true, value } or { ok: false, status, message }.
+// `status` is Gemini's HTTP status (0 when the request never got a response).
+async function callGemini(model, requestBody, apiKey) {
   let geminiRes;
   try {
     geminiRes = await fetch(`${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body),
+      body: requestBody,
     });
   } catch (err) {
-    return jsonError(502, `Could not reach Gemini: ${scrub(String(err && err.message || err), apiKey)}`);
+    return fail(0, `Could not reach Gemini: ${scrub(String(err && err.message || err), apiKey)}`);
   }
 
   let payload;
   try {
     payload = await geminiRes.json();
   } catch {
-    return jsonError(502, `Gemini returned an unreadable response (HTTP ${geminiRes.status}).`);
+    return fail(geminiRes.status, `Gemini returned an unreadable response (HTTP ${geminiRes.status}).`);
   }
 
   if (!geminiRes.ok) {
-    return jsonError(502, describeGeminiError(geminiRes.status, payload, model, apiKey));
+    return fail(geminiRes.status, describeGeminiError(geminiRes.status, payload, model, apiKey));
   }
 
   const candidate = payload.candidates && payload.candidates[0];
   if (!candidate) {
     const reason = payload.promptFeedback && payload.promptFeedback.blockReason;
-    return jsonError(502, reason ? `Gemini blocked the request (${reason}).` : "Gemini returned no result.");
+    return fail(200, reason ? `Gemini blocked the request (${reason}).` : "Gemini returned no result.");
   }
   if (candidate.finishReason && candidate.finishReason !== "STOP") {
     const hint = candidate.finishReason === "MAX_TOKENS" ? " The recording may be too long to organize in one go." : "";
-    return jsonError(502, `Gemini stopped early (${candidate.finishReason}).${hint}`);
+    return fail(200, `Gemini stopped early (${candidate.finishReason}).${hint}`);
   }
 
   const text = ((candidate.content && candidate.content.parts) || [])
@@ -143,16 +233,21 @@ export async function onRequest({ request, env }) {
   try {
     parsed = JSON.parse(text);
   } catch {
-    return jsonError(502, "Gemini's answer wasn't valid JSON. Try again.");
+    return fail(200, "Gemini's answer wasn't valid JSON. Try again.");
   }
 
   const result = validateResult(parsed);
   if (!result.ok) {
-    return jsonError(502, `Gemini's answer didn't match the expected format: ${result.error}`);
+    return fail(200, `Gemini's answer didn't match the expected format: ${result.error}`);
   }
-
-  return json(200, result.value);
+  return { ok: true, value: result.value };
 }
+
+function fail(status, message) {
+  return { ok: false, status, message };
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------- helpers ----------
 

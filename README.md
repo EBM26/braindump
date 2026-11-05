@@ -22,6 +22,7 @@ functions/
 - **Audio formats.** The browser records in the first format it supports that Gemini also accepts: WebM/Opus (Chrome, Firefox), Ogg, then MP4/AAC (Safari/iOS, sent to Gemini as `audio/m4a`). If none of those work, the browser's own recording is converted to 16 kHz mono WAV before upload. The upload is the raw audio, with its MIME type in the `Content-Type` header. Yes
 - **Size limit.** Gemini accepts up to 20 MB per request with inline audio, and that limit counts the audio after base64 encoding. So `/api/dump` rejects audio over about 15 MB with a clear message. A 10-minute recording at the 64 kbps the app uses is about 5 MB. The WAV fallback is much bigger (about 1.9 MB per minute), so it can only take about 7½ minutes.
 - **Model.** The default is `gemini-3.6-flash`, the current stable Flash model with audio input and a free tier. Set `GEMINI_MODEL` to switch models without changing code.
+- **When Gemini is busy.** If Gemini answers 429 (rate limit) or 503 (overloaded), the function retries up to 3 times, waiting about 2 s, 5 s, then 10 s. It encodes the audio once and reuses it for every try. If all 4 tries are busy, it tries once with `GEMINI_FALLBACK_MODEL` (default `gemini-3.5-flash-lite`, the current stable Flash-Lite with audio input). Only then does the page show an error. Other errors fail immediately. While this happens the page shows "Gemini is busy, retrying…". To make that possible, `/api/dump` streams status events (`text/event-stream`) once the audio has passed the input checks; bad input still gets a plain JSON error.
 - **API key.** Only the Pages Function reads `GEMINI_API_KEY`. The function sends it to Gemini in the `x-goog-api-key` header and never in a URL. Error messages are scrubbed in case they contain the key.
 
 ## Local development
@@ -79,6 +80,7 @@ Pages project → **Settings** → **Variables and Secrets** → **Add**:
 |------------------|------------|-------------------------------------------|
 | `GEMINI_API_KEY` | **Secret** | your Gemini key                           |
 | `GEMINI_MODEL`   | Text       | *(optional)* e.g. `gemini-3.6-flash`      |
+| `GEMINI_FALLBACK_MODEL` | Text | *(optional)* e.g. `gemini-3.5-flash-lite` |
 
 Add them to **Production** (and to Preview if you use preview deploys). Then **redeploy**, because variables only apply to new deployments: **Deployments** → latest → **⋯** → **Retry deployment**.
 

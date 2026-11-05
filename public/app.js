@@ -3,7 +3,8 @@
 // ---------- Config ----------
 
 const MAX_SECONDS = 10 * 60; // recording cap; auto-stop here
-const REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
+// Generous: the server may retry Gemini 3 times (waiting ~17s in total) and then try a fallback model.
+const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Recording formats in order of preference. `record` is what we ask MediaRecorder for;
 // `send` is the MIME type Gemini documents as supported for that format.
@@ -221,14 +222,34 @@ async function send() {
       : "Network error — couldn't reach the server. Check your connection and retry.", true);
     return;
   }
-  clearTimeout(timeout);
-
   let data = null;
-  try { data = await res.json(); } catch { /* handled below */ }
+  let errorMessage = null;
+  try {
+    if ((res.headers.get("Content-Type") || "").includes("text/event-stream")) {
+      // Gemini stage: status events while the server retries, then a final result/error.
+      const outcome = await readEvents(res, (event) => {
+        if (event.state === "retrying" || event.state === "fallback") {
+          setView("processing", "Gemini is busy, retrying…");
+        }
+      });
+      if (outcome && outcome.type === "result") data = outcome.data;
+      else errorMessage = (outcome && outcome.error) || "The connection closed before the result arrived.";
+    } else {
+      // Rejected before reaching Gemini (bad input, missing key, …): plain JSON error.
+      const body = await res.json().catch(() => null);
+      if (res.ok && body && !body.error) data = body;
+      else errorMessage = (body && body.error) || `Server error (HTTP ${res.status}).`;
+    }
+  } catch (err) {
+    errorMessage = err && err.name === "AbortError"
+      ? "The request timed out. Check your connection and retry."
+      : "The connection dropped while waiting for the result. Check your connection and retry.";
+  } finally {
+    clearTimeout(timeout);
+  }
 
-  if (!res.ok || !data || data.error) {
-    const message = (data && data.error) || `Server error (HTTP ${res.status}).`;
-    showError(message, true);
+  if (errorMessage || !data) {
+    showError(errorMessage || "Empty response from the server.", true);
     return;
   }
 
@@ -236,6 +257,39 @@ async function send() {
   lastResult = data;
   renderResult(data);
   setView("result");
+}
+
+// Reads a text/event-stream response. Calls onStatus for each status event and
+// returns the final { type: "result" | "error" } event (or null if the stream ended without one).
+async function readEvents(res, onStatus) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final = null;
+
+  const handle = (block) => {
+    const json = block.split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!json) return;
+    const event = JSON.parse(json);
+    if (event.type === "status") onStatus(event);
+    else if (event.type === "result" || event.type === "error") final = event;
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let split;
+    while ((split = buffer.indexOf("\n\n")) !== -1) {
+      handle(buffer.slice(0, split));
+      buffer = buffer.slice(split + 2);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) handle(buffer);
+  return final;
 }
 
 // ---------- Rendering ----------
