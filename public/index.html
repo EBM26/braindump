@@ -24,6 +24,8 @@
     </form>
 
     <div id="appContent" hidden>
+    <!-- ===== Record view ===== -->
+    <div class="view" id="view-record">
     <!-- Recorder: idle / recording / processing -->
     <section class="recorder" id="recorder" aria-live="polite">
       <button type="button" class="record-btn" id="recordBtn" aria-label="Start recording">
@@ -45,6 +47,7 @@
 
     <!-- Result -->
     <section class="result" id="result" hidden>
+      <p class="save-status" id="saveStatus" role="status" hidden></p>
       <div class="actions">
         <button type="button" class="btn btn--primary" id="copyBtn">Copy all</button>
         <button type="button" class="btn" id="newBtn">New recording</button>
@@ -52,10 +55,63 @@
       <div id="resultBody"></div>
       <details class="transcript" id="transcriptBox">
         <summary>Full transcript</summary>
-        <p id="transcript"></p>
+        <p id="transcript" dir="auto"></p>
       </details>
       <p class="model-info" id="modelInfo" hidden></p>
     </section>
+    </div>
+
+    <!-- ===== Tasks view ===== -->
+    <div class="view" id="view-tasks" hidden>
+      <div class="view-header">
+        <h2 class="view-title">Tasks</h2>
+        <label class="toggle">
+          <input type="checkbox" id="showCompleted"> Show completed
+        </label>
+      </div>
+      <p class="view-message" id="tasksMessage" role="status" hidden></p>
+      <div id="tasksList"></div>
+    </div>
+
+    <!-- ===== History view ===== -->
+    <div class="view" id="view-history" hidden>
+      <div id="historyListView">
+        <div class="view-header"><h2 class="view-title">History</h2></div>
+        <p class="view-message" id="historyMessage" role="status" hidden></p>
+        <ul class="history-list" id="historyList"></ul>
+        <button type="button" class="btn btn--block" id="loadMoreBtn" hidden>Load more</button>
+      </div>
+
+      <div id="dumpDetail" hidden>
+        <div class="view-header">
+          <button type="button" class="link-btn" id="backBtn">‹ History</button>
+        </div>
+        <p class="detail-meta" id="detailMeta"></p>
+        <p class="view-message" id="detailMessage" role="status" hidden></p>
+        <div id="detailBody"></div>
+        <details class="transcript" id="detailTranscriptBox">
+          <summary>Full transcript</summary>
+          <p id="detailTranscript" dir="auto"></p>
+        </details>
+        <div class="danger-zone">
+          <button type="button" class="btn btn--danger" id="deleteBtn">Delete this dump</button>
+          <div class="confirm" id="deleteConfirm" hidden>
+            <p id="deleteConfirmText">Delete this dump and all its items? This can't be undone.</p>
+            <div class="actions">
+              <button type="button" class="btn btn--danger" id="deleteYesBtn">Delete</button>
+              <button type="button" class="btn" id="deleteNoBtn">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Bottom tab bar ===== -->
+    <nav class="tabbar" aria-label="Views">
+      <button type="button" class="tabbar__btn" data-tab="record" aria-current="page">Record</button>
+      <button type="button" class="tabbar__btn" data-tab="tasks">Tasks</button>
+      <button type="button" class="tabbar__btn" data-tab="history">History</button>
+    </nav>
     </div>
   </main>
 

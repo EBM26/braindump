@@ -1,10 +1,12 @@
 {
   "name": "brain-dump",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Voice brain dump organized by Gemini. Phase 1: core loop.",
+  "description": "Voice brain dump organized by Gemini, saved to Cloudflare D1.",
   "scripts": {
-    "dev": "wrangler pages dev public --compatibility-date=2026-10-01"
+    "dev": "wrangler pages dev",
+    "db:migrate:local": "wrangler d1 migrations apply braindump --local",
+    "db:migrate:remote": "wrangler d1 migrations apply braindump --remote"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

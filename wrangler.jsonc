@@ -1,0 +1,26 @@
+// Cloudflare Pages config. Used by `npm run dev` locally and by Cloudflare when deploying.
+// Once this file is in the repo, it is the source of truth for the settings below:
+// the dashboard shows them read-only. Secrets (GEMINI_API_KEY, APP_PASSWORD) are NOT
+// stored here; they stay in the dashboard (production) and .dev.vars (local).
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  // Must match your Cloudflare Pages project name.
+  "name": "brain-dump",
+  "pages_build_output_dir": "public",
+  "compatibility_date": "2026-10-01",
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "braindump",
+      // Replace with the id printed by `npx wrangler d1 create braindump` (see README).
+      // Local dev works without it; deploys need the real id.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+
+  // Optional non-secret settings. With this file in place, set them here instead of the dashboard:
+  // "vars": { "GEMINI_MODEL": "gemini-3.6-flash", "GEMINI_FALLBACK_MODEL": "gemini-3.5-flash-lite" }
+}

@@ -1,15 +1,19 @@
-// POST /api/dump
+// POST /api/dump[?duration_sec=<int>]
 // Body: the raw recorded audio. Content-Type header: its MIME type (e.g. audio/webm).
+// After Gemini succeeds, the dump and its items are saved to D1 in one batch.
 //
 // Bad input → a plain JSON error ({ error }) with a 4xx/5xx status.
 // Valid input → 200 with a text/event-stream. Each event is `data: <json>`:
 //   { type: "status", state: "retrying", attempt, maxRetries, waitSeconds, model }
 //   { type: "status", state: "fallback", model }
-//   { type: "result", data: { transcript, summary, tasks, ..., model } }   ← final
+//   { type: "result", data: { ...dump, saved: true } }                 ← final (saved; ids included)
+//   { type: "result", data: { ...organized, saved: false, save_error } } ← final (Gemini OK, save failed)
 //   { type: "error", error: "readable message" }                     ← final
 // The stream lets the page say "Gemini is busy, retrying…" while the function waits.
 
-import { PROMPT } from "../prompt.js";
+import { buildPrompt, todayIn, USER_CONTEXT } from "../prompt.js";
+import { jsonError } from "../_lib/http.js";
+import { saveDump } from "../_lib/db.js";
 
 // Current stable Gemini Flash model with audio input and a free tier
 // (checked against ai.google.dev / aistudio.google.com docs, Nov 2026).
@@ -47,8 +51,9 @@ const itemSchema = (withDue) => {
   };
   const order = ["text", "project"];
   if (withDue) {
-    properties.due = { type: "STRING", nullable: true };
-    order.push("due");
+    properties.due_text = { type: "STRING", nullable: true };  // the speaker's wording
+    properties.due_date = { type: "STRING", nullable: true };  // YYYY-MM-DD or null
+    order.push("due_text", "due_date");
   }
   return { type: "OBJECT", properties, required: order, propertyOrdering: order };
 };
@@ -67,9 +72,24 @@ const RESPONSE_SCHEMA = {
   propertyOrdering: ["transcript", "summary", "tasks", "ideas", "open_questions", "notes"],
 };
 
-export async function onRequest({ request, env }) {
+export async function onRequest({ request, env, data }) {
   if (request.method !== "POST") {
     return jsonError(405, "Only POST is allowed.", { Allow: "POST" });
+  }
+
+  const userId = data.userId; // set by _middleware.js after the password check
+  const userContext = USER_CONTEXT[userId];
+  if (!userContext) {
+    return jsonError(500, "No user context is configured for this account (functions/prompt.js).");
+  }
+
+  const durationParam = new URL(request.url).searchParams.get("duration_sec");
+  let durationSec = null;
+  if (durationParam !== null) {
+    durationSec = Number(durationParam);
+    if (!Number.isInteger(durationSec) || durationSec < 0 || durationSec > 24 * 3600) {
+      return jsonError(400, "duration_sec must be a whole number of seconds.");
+    }
   }
 
   const apiKey = env.GEMINI_API_KEY;
@@ -109,7 +129,7 @@ export async function onRequest({ request, env }) {
         role: "user",
         parts: [
           { inlineData: { mimeType, data: toBase64(audio) } }, // base64-encoded exactly once
-          { text: PROMPT },
+          { text: buildPrompt(userId, todayIn(userContext.timeZone)) },
         ],
       },
     ],
@@ -135,7 +155,11 @@ export async function onRequest({ request, env }) {
         apiKey, model, fallbackModel, requestBody,
         onStatus: (status) => sendEvent({ type: "status", ...status }),
       });
-      sendEvent(outcome.ok ? { type: "result", data: outcome.value } : { type: "error", error: outcome.message });
+      if (!outcome.ok) {
+        sendEvent({ type: "error", error: outcome.message });
+        return;
+      }
+      sendEvent({ type: "result", data: await saveResult(env.DB, userId, outcome.value, durationSec) });
     } catch (err) {
       sendEvent({ type: "error", error: `Unexpected server error: ${scrub(String(err && err.message || err), apiKey)}` });
     } finally {
@@ -150,6 +174,25 @@ export async function onRequest({ request, env }) {
       "Cache-Control": "no-store, no-transform",
     },
   });
+}
+
+// Saves the organized result. If saving fails, the result is still returned
+// (with saved: false) so nothing the user said is lost from the screen.
+async function saveResult(db, userId, organizedWithModel, durationSec) {
+  const { model, ...organized } = organizedWithModel;
+  try {
+    if (!db) throw new Error("no D1 database is bound as DB (see README)");
+    const saved = await saveDump(db, userId, organized, { model, durationSec });
+    return { ...saved, saved: true };
+  } catch (err) {
+    return {
+      ...organized,
+      model,
+      duration_sec: durationSec,
+      saved: false,
+      save_error: String((err && err.message) || err),
+    };
+  }
 }
 
 // ---------- Gemini calls ----------
@@ -306,7 +349,12 @@ function validateResult(data) {
         throw new Error(`${key}[${i}] has no text`);
       }
       const out = { text: item.text.trim(), project: optionalString(item.project, `${key}[${i}].project`) };
-      if (withDue) out.due = optionalString(item.due, `${key}[${i}].due`);
+      if (withDue) {
+        out.due_text = optionalString(item.due_text, `${key}[${i}].due_text`);
+        out.due_date = optionalString(item.due_date, `${key}[${i}].due_date`);
+        // A date is only kept if something was actually said and it's a real calendar date.
+        if (!out.due_text || (out.due_date && !isCalendarDate(out.due_date))) out.due_date = null;
+      }
       return out;
     }).filter((item) => item.text !== "");
   };
@@ -335,13 +383,9 @@ function optionalString(value, label) {
   return trimmed === "" ? null : trimmed;
 }
 
-function json(status, data, extraHeaders = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
-  });
-}
-
-function jsonError(status, message, extraHeaders) {
-  return json(status, { error: message }, extraHeaders);
+// "2026-11-12" → true; "2026-02-30", "12/11/2026", "soon" → false.
+function isCalendarDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }

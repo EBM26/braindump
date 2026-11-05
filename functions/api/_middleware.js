@@ -3,8 +3,15 @@
 //
 // The browser sends:  Authorization: Bearer <APP_PASSWORD>
 // Fails closed: if APP_PASSWORD isn't set, every API request is refused.
+//
+// After the check it sets context.data.userId, the user every query is scoped to.
+// It's decided here on the server, never sent by the browser. Single user for now.
 
-export async function onRequest({ request, env, next }) {
+import { jsonError } from "../_lib/http.js";
+
+const CURRENT_USER_ID = "eyal";
+
+export async function onRequest({ request, env, next, data }) {
   const expected = env.APP_PASSWORD;
   if (typeof expected !== "string" || expected.trim() === "") {
     return jsonError(
@@ -19,6 +26,7 @@ export async function onRequest({ request, env, next }) {
     return jsonError(401, "Wrong or missing password.", { "WWW-Authenticate": 'Bearer realm="braindump"' });
   }
 
+  data.userId = CURRENT_USER_ID;
   return next();
 }
 
@@ -31,11 +39,4 @@ async function passwordsMatch(given, expected) {
     crypto.subtle.digest("SHA-256", encoder.encode(expected)),
   ]);
   return crypto.subtle.timingSafeEqual(a, b);
-}
-
-function jsonError(status, message, extraHeaders = {}) {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
-  });
 }
