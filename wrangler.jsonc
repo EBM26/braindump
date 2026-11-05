@@ -16,7 +16,7 @@
       "database_name": "braindump",
       // Replace with the id printed by `npx wrangler d1 create braindump` (see README).
       // Local dev works without it; deploys need the real id.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "b99f080c-f47a-4f0a-b77f-8b902f7169c4",
       "migrations_dir": "migrations"
     }
   ]
