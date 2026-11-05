@@ -5,7 +5,7 @@
 // Valid input → 200 with a text/event-stream. Each event is `data: <json>`:
 //   { type: "status", state: "retrying", attempt, maxRetries, waitSeconds, model }
 //   { type: "status", state: "fallback", model }
-//   { type: "result", data: { transcript, summary, tasks, ... } }   ← final
+//   { type: "result", data: { transcript, summary, tasks, ..., model } }   ← final
 //   { type: "error", error: "readable message" }                     ← final
 // The stream lets the page say "Gemini is busy, retrying…" while the function waits.
 
@@ -240,7 +240,8 @@ async function callGemini(model, requestBody, apiKey) {
   if (!result.ok) {
     return fail(200, `Gemini's answer didn't match the expected format: ${result.error}`);
   }
-  return { ok: true, value: result.value };
+  // `model` records which model actually produced this result (shows when the fallback was used).
+  return { ok: true, value: { ...result.value, model } };
 }
 
 function fail(status, message) {

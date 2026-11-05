@@ -330,6 +330,10 @@ function renderResult(data) {
 
   els.transcript.textContent = data.transcript || "(empty)";
   els.transcriptBox.open = false;
+
+  const modelInfo = $("modelInfo");
+  modelInfo.textContent = data.model ? `Organized by ${data.model}` : "";
+  modelInfo.hidden = !data.model;
 }
 
 function section(title) {

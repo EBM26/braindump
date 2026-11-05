@@ -212,3 +212,5 @@ body {
 }
 .transcript summary { cursor: pointer; font-weight: 600; }
 .transcript p { margin: 0.75rem 0 0; white-space: pre-wrap; color: var(--muted); }
+
+.model-info { margin: 0.75rem 0 0; font-size: 0.8rem; color: var(--muted); text-align: center; }
