@@ -41,6 +41,10 @@
 
 * { box-sizing: border-box; }
 
+/* The JS shows/hides views with the `hidden` attribute. Component rules like
+   `.login { display: flex }` would otherwise override it, so make `hidden` always win. */
+[hidden] { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
