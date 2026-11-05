@@ -11,8 +11,19 @@
   <main class="app">
     <header class="app-header">
       <h1>Brain Dump</h1>
+      <button type="button" class="link-btn" id="logoutBtn" hidden>Log out</button>
     </header>
 
+    <!-- Password screen (shown until a valid password is stored on this device) -->
+    <form class="login" id="login" hidden novalidate>
+      <label for="passwordInput" class="login__label">Password</label>
+      <input type="password" id="passwordInput" class="login__input" autocomplete="current-password"
+             autocapitalize="off" spellcheck="false" required>
+      <p class="login__error" id="loginError" role="alert" hidden></p>
+      <button type="submit" class="btn btn--primary" id="loginBtn">Unlock</button>
+    </form>
+
+    <div id="appContent" hidden>
     <!-- Recorder: idle / recording / processing -->
     <section class="recorder" id="recorder" aria-live="polite">
       <button type="button" class="record-btn" id="recordBtn" aria-label="Start recording">
@@ -45,6 +56,7 @@
       </details>
       <p class="model-info" id="modelInfo" hidden></p>
     </section>
+    </div>
   </main>
 
   <script src="app.js"></script>

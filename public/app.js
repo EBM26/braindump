@@ -45,9 +45,15 @@ const els = {
   transcriptBox: $("transcriptBox"),
   copyBtn: $("copyBtn"),
   newBtn: $("newBtn"),
+  appContent: $("appContent"),
+  login: $("login"),
+  passwordInput: $("passwordInput"),
+  loginError: $("loginError"),
+  loginBtn: $("loginBtn"),
+  logoutBtn: $("logoutBtn"),
 };
 
-// ---------- State (memory only; nothing is stored) ----------
+// ---------- State (memory only, except the password — see "Password gate") ----------
 
 let mediaRecorder = null;
 let stream = null;
@@ -211,7 +217,7 @@ async function send() {
   try {
     res = await fetch("/api/dump", {
       method: "POST",
-      headers: { "Content-Type": pending.mimeType },
+      headers: { "Content-Type": pending.mimeType, ...authHeader() },
       body: pending.blob,
       signal: controller.signal,
     });
@@ -220,6 +226,11 @@ async function send() {
     showError(err && err.name === "AbortError"
       ? "The request timed out. Check your connection and retry."
       : "Network error — couldn't reach the server. Check your connection and retry.", true);
+    return;
+  }
+  if (res.status === 401) {
+    clearTimeout(timeout);
+    handleUnauthorized(); // the recording stays in `pending` and is resent after logging in
     return;
   }
   let data = null;
@@ -411,6 +422,7 @@ function setView(view, statusText) {
 
   els.error.hidden = view !== "error";
   els.result.hidden = view !== "result";
+  els.logoutBtn.disabled = recording || processing;
 }
 
 function showError(message, canRetry) {
@@ -428,8 +440,96 @@ function formatTime(total) {
   return `${m}:${s}`;
 }
 
+// ---------- Password gate ----------
+// The password is kept in localStorage so it's only asked once per device.
+// Every /api request sends it as `Authorization: Bearer <password>`; any 401 clears it.
+
+const PASSWORD_KEY = "braindump.password";
+let memoryPassword = null; // used when localStorage is unavailable (e.g. some private modes)
+
+function getPassword() {
+  try { return localStorage.getItem(PASSWORD_KEY) || memoryPassword; } catch { return memoryPassword; }
+}
+
+function setPassword(value) {
+  memoryPassword = value;
+  try {
+    if (value === null) localStorage.removeItem(PASSWORD_KEY);
+    else localStorage.setItem(PASSWORD_KEY, value);
+  } catch { /* memory copy still works for this visit */ }
+}
+
+function authHeader() {
+  const password = getPassword();
+  return password ? { Authorization: `Bearer ${password}` } : {};
+}
+
+function showLogin(message) {
+  els.appContent.hidden = true;
+  els.logoutBtn.hidden = true;
+  els.login.hidden = false;
+  els.loginError.textContent = message || "";
+  els.loginError.hidden = !message;
+  els.passwordInput.value = "";
+  els.passwordInput.focus();
+}
+
+function showApp() {
+  els.login.hidden = true;
+  els.appContent.hidden = false;
+  els.logoutBtn.hidden = false;
+}
+
+function handleUnauthorized() {
+  setPassword(null);
+  showLogin("Your password was rejected. Please enter it again.");
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const password = els.passwordInput.value;
+  const fail = (message) => {
+    els.loginError.textContent = message;
+    els.loginError.hidden = false;
+  };
+
+  if (!password) return fail("Enter the password.");
+  // HTTP headers can only carry plain ASCII, so a password with Hebrew letters or emoji can't be sent.
+  if (!/^[\x20-\x7E]+$/.test(password)) {
+    return fail("The password can only contain English letters, numbers and standard symbols.");
+  }
+
+  els.loginBtn.disabled = true;
+  els.loginError.hidden = true;
+  try {
+    const res = await fetch("/api/auth", { headers: { Authorization: `Bearer ${password}` } });
+    if (res.status === 401) return fail("Wrong password.");
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      return fail((body && body.error) || `Server error (HTTP ${res.status}).`);
+    }
+    setPassword(password);
+    showApp();
+    if (pending) send(); // a recording was waiting when the password was rejected
+  } catch {
+    fail("Network error — couldn't reach the server. Check your connection and try again.");
+  } finally {
+    els.loginBtn.disabled = false;
+  }
+}
+
+function logOut() {
+  setPassword(null);
+  pending = null;
+  lastResult = null;
+  setView("idle");
+  showLogin();
+}
+
 // ---------- Events ----------
 
+els.login.addEventListener("submit", submitLogin);
+els.logoutBtn.addEventListener("click", logOut);
 els.recordBtn.addEventListener("click", () => {
   if (mediaRecorder && mediaRecorder.state === "recording") stopRecording();
   else startRecording();
@@ -440,3 +540,5 @@ els.copyBtn.addEventListener("click", copyAll);
 els.newBtn.addEventListener("click", () => { lastResult = null; setView("idle"); });
 
 setView("idle");
+if (getPassword()) showApp();
+else showLogin();

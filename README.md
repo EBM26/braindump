@@ -4,7 +4,7 @@ Tap record, talk, tap stop. The audio goes to Gemini, which transcribes it and s
 
 Phase 1 is the core loop only. Nothing is saved anywhere.
 
-> **Warning: the app has no login until you finish [step 4 of Deployment](#4-lock-it-down-with-cloudflare-access-do-this-before-using-the-public-url).** Until then anyone with the URL can use up your Gemini quota.
+> **The API is password-protected.** Every `/api/*` request needs `APP_PASSWORD` (see [Setting the app password](#setting-the-app-password)). If `APP_PASSWORD` isn't set, the API refuses every request, so the app won't work until you set it.
 
 ## How it works
 
@@ -14,6 +14,8 @@ public/            static frontend (no build step)
   app.js           recording, upload, rendering, Copy all, Retry
   style.css        light/dark via prefers-color-scheme
 functions/
+  api/_middleware.js  password check for every /api/* route (runs first)
+  api/auth.js      GET /api/auth → { ok: true } (the login screen's password check)
   api/dump.js      POST /api/dump → Gemini generateContent → validated JSON
   prompt.js        the organizing prompt (edit this to tune results / add clients)
 .dev.vars          local secrets (git-ignored)
@@ -23,6 +25,7 @@ functions/
 - **Size limit.** Gemini accepts up to 20 MB per request with inline audio, and that limit counts the audio after base64 encoding. So `/api/dump` rejects audio over about 15 MB with a clear message. A 10-minute recording at the 64 kbps the app uses is about 5 MB. The WAV fallback is much bigger (about 1.9 MB per minute), so it can only take about 7½ minutes.
 - **Model.** The default is `gemini-3.6-flash`, the current stable Flash model with audio input and a free tier. Set `GEMINI_MODEL` to switch models without changing code.
 - **When Gemini is busy.** If Gemini answers 429 (rate limit) or 503 (overloaded), the function retries up to 3 times, waiting about 2 s, 5 s, then 10 s. It encodes the audio once and reuses it for every try. If all 4 tries are busy, it tries once with `GEMINI_FALLBACK_MODEL` (default `gemini-3.5-flash-lite`, the current stable Flash-Lite with audio input). Only then does the page show an error. Other errors fail immediately. While this happens the page shows "Gemini is busy, retrying…". To make that possible, `/api/dump` streams status events (`text/event-stream`) once the audio has passed the input checks; bad input still gets a plain JSON error.
+- **Password.** `functions/api/_middleware.js` runs before every `/api/*` handler, so any endpoint added under `functions/api/` is protected automatically. It expects `Authorization: Bearer <APP_PASSWORD>` and returns 401 if the password is missing or wrong. The comparison takes the same time whether the guess is close or not, so timing can't leak the password. If `APP_PASSWORD` isn't set, it returns 503 for everything. The page shows a password screen the first time, then remembers the password on that device in `localStorage`. **Log out** (top right) forgets it, and any 401 clears it and shows the password screen again. If a recording was waiting when that happened, it's sent automatically after you log back in. The password must be plain ASCII (English letters, digits, standard symbols), because HTTP headers can't carry Hebrew letters or emoji.
 - **API key.** Only the Pages Function reads `GEMINI_API_KEY`. The function sends it to Gemini in the `x-goog-api-key` header and never in a URL. Error messages are scrubbed in case they contain the key.
 
 ## Local development
@@ -31,8 +34,9 @@ Requires Node.js 22+.
 
 ```sh
 npm install
-# put your real key in .dev.vars:
+# put your real key and a password in .dev.vars:
 #   GEMINI_API_KEY=...
+#   APP_PASSWORD=...
 npm run dev        # = wrangler pages dev public
 ```
 
@@ -79,14 +83,28 @@ Pages project → **Settings** → **Variables and Secrets** → **Add**:
 | Name             | Type       | Value                                     |
 |------------------|------------|-------------------------------------------|
 | `GEMINI_API_KEY` | **Secret** | your Gemini key                           |
+| `APP_PASSWORD`   | **Secret** | the app password (see below)              |
 | `GEMINI_MODEL`   | Text       | *(optional)* e.g. `gemini-3.6-flash`      |
 | `GEMINI_FALLBACK_MODEL` | Text | *(optional)* e.g. `gemini-3.5-flash-lite` |
 
 Add them to **Production** (and to Preview if you use preview deploys). Then **redeploy**, because variables only apply to new deployments: **Deployments** → latest → **⋯** → **Retry deployment**.
 
-### 4. Lock it down with Cloudflare Access (do this before using the public URL)
+#### Setting the app password
 
-This puts a login wall in front of the whole site, including `/api/dump`, so only your email can get in. It's free for up to 50 users.
+1. Choose a long password: 16+ characters, English letters, digits and symbols only (no Hebrew or emoji; see "Password" above). A password manager's generator is ideal. You type it once per device.
+2. Cloudflare dashboard → **Workers & Pages** → your project → **Settings** → **Variables and Secrets** → **Add**.
+3. **Type: Secret** (not Text). A Secret is encrypted and hidden after saving, while a Text variable stays readable in the dashboard.
+   **Name:** `APP_PASSWORD`. **Value:** your password. Save it for **Production**, and for **Preview** too if you use preview deploys.
+4. **Redeploy** so the new value takes effect: **Deployments** → latest → **⋯** → **Retry deployment**. Until you do, the running deployment keeps the old value, or refuses every request if there was none.
+5. Check it: open the site, enter the password, and record something. `curl -i https://<project>.pages.dev/api/auth` should return **401**.
+
+To change the password, edit the Secret, redeploy, and enter the new one on each device. The old one now gets a 401, so the app asks again.
+
+For local dev, add `APP_PASSWORD=...` to `.dev.vars` and restart `npm run dev`.
+
+### 4. Optional: an extra layer with Cloudflare Access
+
+The password gate above is enough on its own. If you also want an email login in front of the whole site, Cloudflare Access does that. It's free for up to 50 users.
 
 **a. Turn on email one-time PIN login (first time only)**
 
@@ -131,6 +149,8 @@ If you add a **custom domain** later, protect it too: Zero Trust → **Access co
 - [ ] Nickname ("the sugaring site") → "Soft & Sweet Sugaring"
 - [ ] Nothing invented: no extra tasks or due dates
 - [ ] Turn off Wi-Fi / use a bad key → readable error; **Retry** works without re-recording
+- [ ] Without the password every `/api/*` request returns 401; with it everything works; the phone remembers it after the first time
+- [ ] With `APP_PASSWORD` unset, the API refuses every request (503)
 - [ ] Key not in repo (`git grep -i AIza` finds nothing) and not in the browser (DevTools → Network → `/api/dump` request/response)
 - [ ] `git status` / `git check-ignore -v .dev.vars` confirms `.dev.vars` is ignored
 

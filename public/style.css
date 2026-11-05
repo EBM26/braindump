@@ -213,4 +213,40 @@ body {
 .transcript summary { cursor: pointer; font-weight: 600; }
 .transcript p { margin: 0.75rem 0 0; white-space: pre-wrap; color: var(--muted); }
 
+/* ---------- Password screen / log out ---------- */
+
+.app-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+
+.link-btn {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0.5rem 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.login {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 22rem;
+  margin: 3rem auto 0;
+}
+.login__label { font-weight: 600; }
+.login__input {
+  font: inherit;
+  font-size: 1.05rem; /* ≥16px so iOS Safari doesn't zoom on focus */
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.login__input:focus { outline: 3px solid var(--accent); outline-offset: 1px; }
+.login__error { margin: 0; color: var(--error-text); }
+
 .model-info { margin: 0.75rem 0 0; font-size: 0.8rem; color: var(--muted); text-align: center; }
