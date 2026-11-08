@@ -1,6 +1,6 @@
 # Brain Dump
 
-Tap record, talk, tap stop. The audio goes to Gemini, which transcribes it and sorts it into a summary, tasks, ideas, open questions and notes, tagged by project. Every dump is saved to a Cloudflare D1 database. The **Tasks** tab collects open tasks from all dumps, and **History** lists past dumps.
+Tap record, talk, tap stop. The audio goes to Gemini, which transcribes it and sorts it into a summary, tasks, ideas, open questions and notes, tagged by project. Every dump is saved to a Cloudflare D1 database. The **Tasks** tab collects open tasks from all dumps, **Notes** collects ideas, open questions and notes, and **History** lists past dumps. Tap any item in Tasks, Notes or a past dump to edit or delete it.
 
 > **The API is password-protected.** Every `/api/*` request needs `APP_PASSWORD` (see [Setting the app password](#setting-the-app-password)). If `APP_PASSWORD` isn't set, the API refuses every request, so the app won't work until you set it.
 
@@ -8,8 +8,8 @@ Tap record, talk, tap stop. The audio goes to Gemini, which transcribes it and s
 
 ```
 public/                 static frontend (no build step)
-  index.html            Record / Tasks / History views + bottom tab bar
-  app.js                recording, upload, rendering, Tasks, History, password screen
+  index.html            Record / Tasks / Notes / History views, bottom tab bar, item editor dialog
+  app.js                recording, upload, rendering, Tasks, Notes, History, item editor, password screen
   style.css             light/dark via prefers-color-scheme
 functions/
   api/_middleware.js    password check for every /api/* route (runs first); sets the user id
@@ -19,7 +19,10 @@ functions/
   api/dumps/[id].js     GET    /api/dumps/:id      → one dump with transcript + items
                         DELETE /api/dumps/:id      → deletes the dump and its items
   api/tasks.js          GET    /api/tasks?status=open|done|all&project=…
-  api/items/[id].js     PATCH  /api/items/:id      { "done": true|false }
+  api/notes.js          GET    /api/notes?type=idea|open_question|note&project=…  (newest first)
+  api/projects.js       GET    /api/projects       → every project name in use (for the editor's picker)
+  api/items/[id].js     PATCH  /api/items/:id      any of { text, project, type, due_date, done }
+                        DELETE /api/items/:id      → deletes one item
   _lib/http.js, db.js   shared helpers (not routes)
   prompt.js             the organizing prompt: generic instructions + your personal context
 migrations/
@@ -36,6 +39,7 @@ wrangler.jsonc          Pages config: output dir, compatibility date, D1 binding
 - **Saving.** After Gemini succeeds, `/api/dump` writes the dump and all its items to D1 in one batch, which is one transaction: either everything is saved or nothing is. The result then shows **✓ Saved**. If Gemini succeeded but saving failed, you still get the result, with a **Not saved** warning and the reason, and **Copy all** still works.
 - **Data model.** Every row has a `user_id`. For now the server always sets it to `"eyal"` (in `_middleware.js`, never from the browser), and every query filters by it, so more users can be added later without one seeing another's data. Deleting a dump deletes its items, because D1 enforces foreign keys and `items.dump_id` uses `ON DELETE CASCADE`.
 - **Due dates.** Today's date in Israel time (Asia/Jerusalem) is sent to Gemini with the prompt. Each task gets `due_text` (your exact words, like "מחר" or "next Thursday") and `due_date` (`YYYY-MM-DD`). `due_date` is filled only when the wording points to one specific day. Vague timing ("soon", "next week") gives `due_date: null`. The server also drops any `due_date` that isn't a real calendar date, or that comes without any spoken wording. "Thursday" and "next Thursday" both mean the first Thursday after today.
+- **Editing items.** Tap an item in Tasks, Notes or a past dump (in History) to change its text, project (pick one already in use, or **New project…**), type, and for tasks the due date. Results on the Record screen aren't editable; open the dump from History to edit it. Picking a due date sets `due_date` and clears `due_text`, since your spoken words no longer describe it. **Clear** removes both. Changing a task to another type drops its due date and done state; changing an item to a task moves it between the Tasks and Notes tabs. **Delete item** asks for confirmation first. `PATCH /api/items/:id` takes only the fields that changed, validates each one (text not empty, type one of the four, a real calendar date, done and due date for tasks only), and rejects unknown fields. Like every query, it filters by `user_id`, so another user's item returns 404.
 - **Hebrew.** Every element that shows transcript, summary or item text has `dir="auto"`, so Hebrew displays right-to-left and English left-to-right, even when mixed in one list.
 - **API key.** Only the Pages Function reads `GEMINI_API_KEY`. The function sends it to Gemini in the `x-goog-api-key` header and never in a URL. Error messages are scrubbed in case they contain the key.
 
@@ -208,6 +212,9 @@ If you add a **custom domain** later, protect it too: Zero Trust → **Access co
 - [ ] Tasks shows open tasks from all dumps, grouped by project; checking one off survives a reload
 - [ ] "Remind me tomorrow" → `due_date` is tomorrow (Israel time); "sometime soon" → `due_date: null`
 - [ ] Deleting a dump removes it and its tasks
+- [ ] Tapping an item in Tasks, Notes or a past dump opens the editor; text, project (existing or new), type and due date changes are saved and survive a reload
+- [ ] Picking a due date replaces the spoken wording; a single item can be deleted after confirming
+- [ ] Notes tab shows ideas, open questions and notes, newest first, grouped by project; the chips filter by type
 - [ ] Hebrew displays right-to-left on iPhone Safari and desktop Chrome
 - [ ] Local dev works with the local D1 database (`npm run db:migrate:local`, then `npm run dev`)
 

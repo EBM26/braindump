@@ -193,6 +193,43 @@ body {
   overflow-wrap: anywhere;
 }
 .items li:first-child { border-top: 0; padding-top: 0.15rem; }
+.items li:has(> .item-edit) { padding: 0; }
+.items li:first-child > .item-edit { padding-top: 0.15rem; }
+
+.item__content { display: block; flex: 1; min-width: 0; }
+.item__date { font-size: 0.75rem; color: var(--muted); margin-inline-start: 0.4rem; white-space: nowrap; }
+.tag--type { background: var(--border); color: var(--text); }
+
+/* A tappable item (opens the editor). */
+.item-edit {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.item-edit:active { background: var(--bg); }
+.item-edit:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.item-edit__hint { flex: none; color: var(--muted); font-size: 0.9rem; line-height: 1.6; opacity: 0.7; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 .tag {
   display: inline-block;
@@ -303,21 +340,28 @@ body {
 .task {
   display: flex;
   align-items: flex-start;
-  gap: 0.7rem;
-  padding: 0.6rem 0;
   border-top: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
 .task:first-of-type { border-top: 0; }
-.task input[type="checkbox"] {
+/* Bigger tap area than the checkbox itself. */
+.task__check {
   flex: none;
+  display: flex;
+  padding: 0.6rem 0.7rem 0.6rem 0;
+  margin-inline-start: -0.2rem;
+  padding-inline-start: 0.2rem;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.task__check input {
   width: 1.35rem;
   height: 1.35rem;
   margin: 0.1rem 0 0;
   accent-color: var(--accent);
   cursor: pointer;
 }
-.task__text { flex: 1; }
+.task .item-edit { padding: 0.6rem 0; }
 .task--done .task__body { text-decoration: line-through; color: var(--muted); }
 .tag--overdue { background: var(--error-bg); color: var(--error-text); }
 
@@ -388,3 +432,75 @@ body {
 }
 .tabbar__btn[aria-current="page"] { color: var(--accent); border-top-color: var(--accent); }
 .tabbar__btn:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* ---------- Notes filter chips ---------- */
+
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.9rem; }
+.chip {
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.chip:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Item editor dialog ---------- */
+
+.sheet {
+  width: min(32rem, calc(100% - 2rem));
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  /* Near the top, so the iPhone keyboard doesn't cover the fields. */
+  margin: max(1rem, env(safe-area-inset-top)) auto auto;
+  padding: 0; /* backdrop taps close the dialog; padding lives on the form */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sheet::backdrop { background: rgba(0, 0, 0, 0.45); }
+.sheet__title { font-size: 1.1rem; margin: 0 0 0.25rem; outline: none; }
+
+.form { display: flex; flex-direction: column; gap: 0.4rem; padding: 1.1rem; }
+.form .actions { margin-top: 0.75rem; }
+.form .danger-zone { margin-top: 1rem; }
+.field__label { font-weight: 600; font-size: 0.9rem; margin-top: 0.5rem; }
+.field__input {
+  display: block;
+  width: 100%;
+  min-height: 2.9rem;
+  font: inherit;
+  font-size: 1.05rem; /* ≥16px so iOS Safari doesn't zoom on focus */
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.field__input:focus { outline: 3px solid var(--accent); outline-offset: 1px; }
+textarea.field__input { resize: vertical; min-height: 5.5rem; line-height: 1.4; }
+select.field__input {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-inline-end: 2.2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238a8a90' stroke-width='2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.85rem center;
+}
+/* iOS Safari collapses an empty date input and centers its value; keep it field-sized and start-aligned. */
+input[type="date"].field__input { -webkit-appearance: none; appearance: none; }
+input[type="date"].field__input::-webkit-date-and-time-value { text-align: start; min-height: 1.4em; }
+.field__row { display: flex; align-items: center; gap: 0.75rem; }
+.field__row .field__input { flex: 1; min-width: 0; }
+.field__hint { margin: 0; font-size: 0.85rem; color: var(--muted); }
+.form .view-message { margin: 0.5rem 0 0; }

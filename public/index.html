@@ -73,6 +73,19 @@
       <div id="tasksList"></div>
     </div>
 
+    <!-- ===== Notes view (ideas, open questions, notes) ===== -->
+    <div class="view" id="view-notes" hidden>
+      <div class="view-header"><h2 class="view-title">Notes</h2></div>
+      <div class="chips" role="group" aria-label="Show">
+        <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="chip" data-filter="idea" aria-pressed="false">Ideas</button>
+        <button type="button" class="chip" data-filter="open_question" aria-pressed="false">Open questions</button>
+        <button type="button" class="chip" data-filter="note" aria-pressed="false">Notes</button>
+      </div>
+      <p class="view-message" id="notesMessage" role="status" hidden></p>
+      <div id="notesList"></div>
+    </div>
+
     <!-- ===== History view ===== -->
     <div class="view" id="view-history" hidden>
       <div id="historyListView">
@@ -110,10 +123,62 @@
     <nav class="tabbar" aria-label="Views">
       <button type="button" class="tabbar__btn" data-tab="record" aria-current="page">Record</button>
       <button type="button" class="tabbar__btn" data-tab="tasks">Tasks</button>
+      <button type="button" class="tabbar__btn" data-tab="notes">Notes</button>
       <button type="button" class="tabbar__btn" data-tab="history">History</button>
     </nav>
     </div>
   </main>
+
+  <!-- Item editor (Tasks, Notes and dump detail) -->
+  <dialog class="sheet" id="editDialog" aria-labelledby="editTitle">
+    <form id="editForm" class="form" novalidate>
+      <h2 class="sheet__title" id="editTitle" tabindex="-1" autofocus>Edit item</h2>
+
+      <label class="field__label" for="editText">Text</label>
+      <textarea class="field__input" id="editText" dir="auto" rows="3" maxlength="5000"></textarea>
+
+      <label class="field__label" for="editType">Type</label>
+      <select class="field__input" id="editType">
+        <option value="task">Task</option>
+        <option value="idea">Idea</option>
+        <option value="open_question">Open question</option>
+        <option value="note">Note</option>
+      </select>
+      <p class="field__hint" id="editTypeHint" hidden>Changing a task to another type removes its due date and done state.</p>
+
+      <label class="field__label" for="editProject">Project</label>
+      <select class="field__input" id="editProject"></select>
+      <input type="text" class="field__input" id="editNewProject" dir="auto" maxlength="100"
+             placeholder="New project name" aria-label="New project name" autocomplete="off" hidden>
+
+      <div id="editDueField">
+        <label class="field__label" for="editDue">Due date</label>
+        <div class="field__row">
+          <input type="date" class="field__input" id="editDue">
+          <button type="button" class="link-btn" id="editClearDue">Clear</button>
+        </div>
+        <p class="field__hint" id="editDueHint" dir="auto" hidden></p>
+      </div>
+
+      <p class="view-message view-message--error" id="editError" role="alert" hidden></p>
+
+      <div class="actions">
+        <button type="submit" class="btn btn--primary" id="editSaveBtn">Save</button>
+        <button type="button" class="btn" id="editCancelBtn">Cancel</button>
+      </div>
+
+      <div class="danger-zone">
+        <button type="button" class="btn btn--danger" id="editDeleteBtn">Delete item</button>
+        <div class="confirm" id="editDeleteConfirm" hidden>
+          <p>Delete this item? This can't be undone.</p>
+          <div class="actions">
+            <button type="button" class="btn btn--danger" id="editDeleteYesBtn">Delete</button>
+            <button type="button" class="btn" id="editDeleteNoBtn">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

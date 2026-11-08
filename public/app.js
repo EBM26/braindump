@@ -20,11 +20,14 @@ const FORMATS = [
 ];
 
 const SECTIONS = [
-  { key: "tasks", title: "Tasks" },
-  { key: "ideas", title: "Ideas" },
-  { key: "open_questions", title: "Open questions" },
-  { key: "notes", title: "Notes" },
+  { key: "tasks", type: "task", title: "Tasks" },
+  { key: "ideas", type: "idea", title: "Ideas" },
+  { key: "open_questions", type: "open_question", title: "Open questions" },
+  { key: "notes", type: "note", title: "Notes" },
 ];
+const KEY_FOR_TYPE = Object.fromEntries(SECTIONS.map((s) => [s.type, s.key]));
+const TYPE_LABELS = { task: "Task", idea: "Idea", open_question: "Open question", note: "Note" };
+const TYPE_WITH_ARTICLE = { task: "a task", idea: "an idea", open_question: "an open question", note: "a note" };
 
 // ---------- Elements ----------
 
@@ -48,7 +51,28 @@ const els = {
   appContent: $("appContent"),
   saveStatus: $("saveStatus"),
   tabButtons: [...document.querySelectorAll(".tabbar__btn")],
-  views: { record: $("view-record"), tasks: $("view-tasks"), history: $("view-history") },
+  views: { record: $("view-record"), tasks: $("view-tasks"), notes: $("view-notes"), history: $("view-history") },
+  noteChips: [...document.querySelectorAll("#view-notes .chip")],
+  notesMessage: $("notesMessage"),
+  notesList: $("notesList"),
+  editDialog: $("editDialog"),
+  editForm: $("editForm"),
+  editText: $("editText"),
+  editType: $("editType"),
+  editTypeHint: $("editTypeHint"),
+  editProject: $("editProject"),
+  editNewProject: $("editNewProject"),
+  editDueField: $("editDueField"),
+  editDue: $("editDue"),
+  editClearDue: $("editClearDue"),
+  editDueHint: $("editDueHint"),
+  editError: $("editError"),
+  editSaveBtn: $("editSaveBtn"),
+  editCancelBtn: $("editCancelBtn"),
+  editDeleteBtn: $("editDeleteBtn"),
+  editDeleteConfirm: $("editDeleteConfirm"),
+  editDeleteYesBtn: $("editDeleteYesBtn"),
+  editDeleteNoBtn: $("editDeleteNoBtn"),
   showCompleted: $("showCompleted"),
   tasksMessage: $("tasksMessage"),
   tasksList: $("tasksList"),
@@ -358,7 +382,8 @@ function renderResult(data) {
 }
 
 // Summary + Tasks/Ideas/Open questions/Notes for a dump. Used by Record results and History.
-function renderSections(container, data) {
+// With `editorFor(item)` (dump detail), each item opens the editor when tapped.
+function renderSections(container, data, editorFor = null) {
   container.replaceChildren();
   const nothing = !data.summary && SECTIONS.every((s) => !data[s.key].length);
 
@@ -382,20 +407,63 @@ function renderSections(container, data) {
     ul.className = "items";
     for (const item of items) {
       const li = document.createElement("li");
-      li.dir = "auto";
       if (item.done) li.className = "task--done";
-      const text = document.createElement("span");
-      text.className = "task__body";
-      text.textContent = item.text;
-      li.append(text);
-      if (item.project) li.append(tag(item.project));
-      const due = dueLabel(item);
-      if (due) li.append(tag(due, "tag--due"));
+      const content = itemContent(item);
+      li.append(editorFor ? editButton(item, content, editorFor(item)) : content);
       ul.append(li);
     }
     sec.append(ul);
     container.append(sec);
   }
+}
+
+// An item's text and tags. dir="auto" so Hebrew items read right-to-left.
+function itemContent(item, { today = "", showProject = true, showType = false, showDate = false } = {}) {
+  const content = document.createElement("span");
+  content.className = "item__content";
+  content.dir = "auto";
+  const text = document.createElement("span");
+  text.className = "task__body";
+  text.textContent = item.text;
+  content.append(text);
+
+  if (showType) content.append(tag(TYPE_LABELS[item.type], "tag--type"));
+  if (showProject && item.project) content.append(tag(item.project));
+  const due = dueLabel(item);
+  if (due) {
+    const overdue = !item.done && item.due_date && today && item.due_date < today;
+    const dueTag = tag(overdue ? `Overdue · ${due}` : due, overdue ? "tag--due tag--overdue" : "tag--due");
+    if (item.due_date && item.due_text) dueTag.title = item.due_text; // what was actually said
+    content.append(dueTag);
+  }
+  if (showDate && item.dump_created_at) {
+    const date = document.createElement("span");
+    date.className = "item__date";
+    date.textContent = formatShortDate(item.dump_created_at);
+    content.append(date);
+  }
+  return content;
+}
+
+// Wraps item content in a button that opens the editor.
+function editButton(item, content, handlers) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "item-edit";
+  const hint = document.createElement("span");
+  hint.className = "item-edit__hint";
+  hint.setAttribute("aria-hidden", "true");
+  hint.textContent = "✎";
+  const label = document.createElement("span");
+  label.className = "visually-hidden";
+  label.textContent = " (edit)";
+  btn.append(content, label, hint);
+  btn.addEventListener("click", () => openEditor(item, handlers));
+  return btn;
+}
+
+function formatShortDate(iso) {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // "Fri, Nov 6" when a date was resolved, otherwise the spoken wording ("soon").
@@ -544,7 +612,9 @@ function showTab(name) {
   window.scrollTo(0, 0);
 
   // Always reload, so a dump recorded a moment ago shows up right away.
+  if (name !== "record") refreshProjects(); // so the editor's project picker is ready when opened
   if (name === "tasks") loadTasks();
+  if (name === "notes") loadNotes();
   if (name === "history") {
     showHistoryList();
     loadHistory(true);
@@ -581,51 +651,30 @@ function renderTasks() {
   }
   setMessage(els.tasksMessage, null);
 
-  const groups = new Map();
-  for (const task of tasks) {
-    const key = task.project || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(task);
-  }
-  const names = [...groups.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b));
-  if (groups.has("")) names.push("");
-
-  for (const name of names) {
+  for (const [name, groupTasks] of groupByProject(tasks)) {
     const group = document.createElement("section");
     group.className = "section task-group";
     const heading = document.createElement("h3");
     heading.dir = "auto";
     heading.textContent = name || "Other";
     group.append(heading);
-    for (const task of groups.get(name)) group.append(taskRow(task, today));
+    for (const task of groupTasks) group.append(taskRow(task, today));
     els.tasksList.append(group);
   }
 }
 
 function taskRow(task, today) {
-  const row = document.createElement("label");
+  const row = document.createElement("div");
   row.className = task.done ? "task task--done" : "task";
 
+  // The checkbox has its own (larger) tap area; tapping the text opens the editor.
+  const check = document.createElement("label");
+  check.className = "task__check";
   const box = document.createElement("input");
   box.type = "checkbox";
   box.checked = task.done;
   box.setAttribute("aria-label", `Done: ${task.text}`);
-
-  const body = document.createElement("span");
-  body.className = "task__text";
-  body.dir = "auto";
-  const text = document.createElement("span");
-  text.className = "task__body";
-  text.textContent = task.text;
-  body.append(text);
-
-  const due = dueLabel(task);
-  if (due) {
-    const overdue = !task.done && task.due_date && today && task.due_date < today;
-    const dueTag = tag(overdue ? `Overdue · ${due}` : due, overdue ? "tag--due tag--overdue" : "tag--due");
-    if (task.due_date && task.due_text) dueTag.title = task.due_text; // what was actually said
-    body.append(dueTag);
-  }
+  check.append(box);
 
   // Optimistic: update the row immediately, revert if the server says no.
   box.addEventListener("change", async () => {
@@ -645,8 +694,119 @@ function taskRow(task, today) {
     }
   });
 
-  row.append(box, body);
+  const content = itemContent(task, { today, showProject: false });
+  row.append(check, editButton(task, content, {
+    onSaved(updated) {
+      const list = tasksState.tasks;
+      const i = list.indexOf(task);
+      if (i === -1) return;
+      const moved = updated.type !== "task";
+      if (moved) list.splice(i, 1);
+      else list[i] = { dump_created_at: task.dump_created_at, ...updated };
+      sortTasks(list);
+      renderTasks();
+      if (moved) setMessage(els.tasksMessage, `Changed to ${TYPE_WITH_ARTICLE[updated.type]}. It's in the Notes tab now.`);
+    },
+    onDeleted() {
+      tasksState.tasks = tasksState.tasks.filter((t) => t !== task);
+      renderTasks();
+    },
+  }));
   return row;
+}
+
+// Same order as the server: tasks with a due date first (soonest first); otherwise unchanged.
+function sortTasks(list) {
+  list.sort((a, b) => (a.due_date === null) - (b.due_date === null) || (a.due_date || "").localeCompare(b.due_date || ""));
+}
+
+// ---------- Notes view (ideas, open questions, notes) ----------
+
+let notesState = { notes: [], filter: "all" };
+let notesRequestId = 0;
+
+async function loadNotes() {
+  const requestId = ++notesRequestId;
+  if (!notesState.notes.length) setMessage(els.notesMessage, "Loading…");
+  try {
+    const data = await api("/api/notes");
+    if (requestId !== notesRequestId) return;
+    notesState.notes = data.notes;
+    renderNotes();
+  } catch (err) {
+    if (err instanceof AuthError || requestId !== notesRequestId) return;
+    setMessage(els.notesMessage, `Couldn't load notes: ${err.message}`, true);
+  }
+}
+
+function setNotesFilter(filter) {
+  notesState.filter = filter;
+  for (const chip of els.noteChips) chip.setAttribute("aria-pressed", String(chip.dataset.filter === filter));
+  renderNotes();
+}
+
+// Newest first, grouped by project like Tasks (alphabetical, "Other" last).
+function renderNotes() {
+  const { filter } = notesState;
+  const notes = notesState.notes.filter((n) => filter === "all" || n.type === filter);
+  els.notesList.replaceChildren();
+  if (!notes.length) {
+    const empty = { all: "No ideas, open questions or notes yet.", idea: "No ideas yet.",
+      open_question: "No open questions yet.", note: "No notes yet." };
+    setMessage(els.notesMessage, empty[filter]);
+    return;
+  }
+  setMessage(els.notesMessage, null);
+
+  for (const [name, group] of groupByProject(notes)) {
+    const sec = document.createElement("section");
+    sec.className = "section task-group";
+    const heading = document.createElement("h3");
+    heading.dir = "auto";
+    heading.textContent = name || "Other";
+    const ul = document.createElement("ul");
+    ul.className = "items";
+    for (const note of group) {
+      const li = document.createElement("li");
+      const content = itemContent(note, { showProject: false, showType: filter === "all", showDate: true });
+      li.append(editButton(note, content, noteEditHandlers(note)));
+      ul.append(li);
+    }
+    sec.append(heading, ul);
+    els.notesList.append(sec);
+  }
+}
+
+function noteEditHandlers(note) {
+  return {
+    onSaved(updated) {
+      const list = notesState.notes;
+      const i = list.indexOf(note);
+      if (i === -1) return;
+      const moved = updated.type === "task";
+      if (moved) list.splice(i, 1);
+      else list[i] = { dump_created_at: note.dump_created_at, ...updated };
+      renderNotes();
+      if (moved) setMessage(els.notesMessage, "Changed to a task. It's in the Tasks tab now.");
+    },
+    onDeleted() {
+      notesState.notes = notesState.notes.filter((n) => n !== note);
+      renderNotes();
+    },
+  };
+}
+
+// [[projectName, items], …] alphabetical, with items that have no project ("") last.
+function groupByProject(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.project || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const names = [...groups.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  if (groups.has("")) names.push("");
+  return names.map((name) => [name, groups.get(name)]);
 }
 
 // ---------- History view ----------
@@ -758,7 +918,7 @@ async function openDump(id) {
       dump.duration_sec != null ? formatTime(dump.duration_sec) : null,
       dump.model,
     ].filter(Boolean).join(" · ");
-    renderSections(els.detailBody, dump);
+    renderSections(els.detailBody, dump, detailEditHandlers);
     els.detailTranscript.textContent = dump.transcript || "(empty)";
     els.detailTranscriptBox.open = false;
     els.detailTranscriptBox.hidden = false;
@@ -767,6 +927,30 @@ async function openDump(id) {
     if (err instanceof AuthError) return;
     setMessage(els.detailMessage, `Couldn't open this dump: ${err.message}`, true);
   }
+}
+
+function detailEditHandlers(item) {
+  const dump = currentDump;
+  const refresh = () => { if (currentDump === dump) renderSections(els.detailBody, dump, detailEditHandlers); };
+  return {
+    onSaved(updated) {
+      const from = dump[KEY_FOR_TYPE[item.type]];
+      const i = from.indexOf(item);
+      if (i === -1) return;
+      if (updated.type === item.type) from[i] = updated;
+      else {
+        from.splice(i, 1);
+        dump[KEY_FOR_TYPE[updated.type]].push(updated);
+      }
+      refresh();
+    },
+    onDeleted() {
+      const from = dump[KEY_FOR_TYPE[item.type]];
+      const i = from.indexOf(item);
+      if (i !== -1) from.splice(i, 1);
+      refresh();
+    },
+  };
 }
 
 function askDelete() {
@@ -796,6 +980,154 @@ async function confirmDelete() {
 function cancelDelete() {
   els.deleteConfirm.hidden = true;
   els.deleteBtn.hidden = false;
+}
+
+// ---------- Item editor ----------
+// One dialog shared by Tasks, Notes and the dump detail. Each caller passes handlers
+// { onSaved(updatedItem), onDeleted() } to update its own list after the server confirms.
+
+const NEW_PROJECT = " new"; // projects are trimmed, so no real project starts with a space
+let editState = null; // { item, handlers, dueTouched }
+let projectsCache = [];
+
+function openEditor(item, handlers) {
+  editState = { item, handlers, dueTouched: false };
+  els.editText.value = item.text;
+  els.editType.value = item.type;
+  fillProjectSelect(item.project || "");
+  els.editNewProject.value = "";
+  els.editNewProject.hidden = true;
+  els.editDue.value = item.due_date || "";
+  els.editDueHint.textContent = item.due_text ? `You said: “${item.due_text}”` : "";
+  els.editDueHint.hidden = !item.due_text;
+  updateEditorForType();
+  setMessage(els.editError, null);
+  els.editDeleteConfirm.hidden = true;
+  els.editDeleteBtn.hidden = false;
+  setEditorBusy(false);
+  els.editDialog.showModal();
+  refreshProjects();
+}
+
+function closeEditor() {
+  if (els.editDialog.open) els.editDialog.close();
+  editState = null;
+}
+
+function fillProjectSelect(selected) {
+  const names = [...projectsCache];
+  if (selected && !names.includes(selected)) names.push(selected);
+  names.sort((a, b) => a.localeCompare(b));
+  const option = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    return o;
+  };
+  els.editProject.replaceChildren(
+    option("", "No project"),
+    ...names.map((name) => option(name, name)),
+    option(NEW_PROJECT, "New project…"),
+  );
+  els.editProject.value = selected;
+}
+
+// Refresh the project list in the background; the current choice stays selected.
+async function refreshProjects() {
+  try {
+    const data = await api("/api/projects");
+    projectsCache = data.projects;
+    if (editState && els.editProject.value !== NEW_PROJECT) fillProjectSelect(els.editProject.value);
+  } catch { /* the cached list is good enough */ }
+}
+
+function updateEditorForType() {
+  if (!editState) return;
+  const isTask = els.editType.value === "task";
+  els.editDueField.hidden = !isTask;
+  els.editTypeHint.hidden = !(editState.item.type === "task" && !isTask);
+}
+
+function onEditProjectChange() {
+  const isNew = els.editProject.value === NEW_PROJECT;
+  els.editNewProject.hidden = !isNew;
+  if (isNew) els.editNewProject.focus();
+}
+
+function onEditDueChange() {
+  if (!editState) return;
+  editState.dueTouched = true;
+  els.editDueHint.hidden = true; // a picked date replaces what was said
+}
+
+function setEditorBusy(busy) {
+  for (const el of [els.editSaveBtn, els.editCancelBtn, els.editDeleteBtn, els.editDeleteYesBtn, els.editDeleteNoBtn]) {
+    el.disabled = busy;
+  }
+}
+
+async function saveEdit(event) {
+  event.preventDefault();
+  if (!editState) return;
+  const { item, handlers } = editState;
+
+  const text = els.editText.value.trim();
+  if (!text) return setMessage(els.editError, "The text can't be empty.", true);
+  let project = els.editProject.value;
+  if (project === NEW_PROJECT) {
+    project = els.editNewProject.value.trim();
+    if (!project) return setMessage(els.editError, "Type a name for the new project.", true);
+  }
+  const type = els.editType.value;
+
+  // Send only what changed.
+  const patch = {};
+  if (text !== item.text) patch.text = text;
+  if (type !== item.type) patch.type = type;
+  if (project !== (item.project || "")) patch.project = project || null;
+  if (type === "task" && editState.dueTouched) {
+    const due = els.editDue.value || null;
+    if (due !== (item.due_date || null) || item.due_text) patch.due_date = due; // also clears due_text
+  }
+  if (!Object.keys(patch).length) return closeEditor();
+
+  setEditorBusy(true);
+  els.editSaveBtn.textContent = "Saving…";
+  try {
+    const updated = await api(`/api/items/${item.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    closeEditor();
+    handlers.onSaved(updated);
+  } catch (err) {
+    if (!(err instanceof AuthError)) setMessage(els.editError, `Couldn't save: ${err.message}`, true);
+  } finally {
+    setEditorBusy(false);
+    els.editSaveBtn.textContent = "Save";
+  }
+}
+
+function askDeleteItem() {
+  els.editDeleteBtn.hidden = true;
+  els.editDeleteConfirm.hidden = false;
+}
+
+function cancelDeleteItem() {
+  els.editDeleteConfirm.hidden = true;
+  els.editDeleteBtn.hidden = false;
+}
+
+async function confirmDeleteItem() {
+  if (!editState) return;
+  const { item, handlers } = editState;
+  setEditorBusy(true);
+  try {
+    await api(`/api/items/${item.id}`, { method: "DELETE" });
+    closeEditor();
+    handlers.onDeleted();
+  } catch (err) {
+    if (!(err instanceof AuthError)) setMessage(els.editError, `Couldn't delete: ${err.message}`, true);
+  } finally {
+    setEditorBusy(false);
+  }
 }
 
 // ---------- Password gate ----------
@@ -839,6 +1171,7 @@ function showApp() {
 }
 
 function handleUnauthorized() {
+  closeEditor();
   setPassword(null);
   showLogin("Your password was rejected. Please enter it again.");
 }
@@ -882,8 +1215,12 @@ function logOut() {
   lastResult = null;
   setView("idle");
   // Don't leave saved data on screen after logging out.
+  closeEditor();
   tasksState = { tasks: [], today: "" };
   els.tasksList.replaceChildren();
+  notesState = { notes: [], filter: "all" };
+  setNotesFilter("all");
+  projectsCache = [];
   els.historyList.replaceChildren();
   els.detailBody.replaceChildren();
   els.detailTranscript.textContent = "";
@@ -910,6 +1247,23 @@ els.backBtn.addEventListener("click", showHistoryList);
 els.deleteBtn.addEventListener("click", askDelete);
 els.deleteYesBtn.addEventListener("click", confirmDelete);
 els.deleteNoBtn.addEventListener("click", cancelDelete);
+for (const chip of els.noteChips) chip.addEventListener("click", () => setNotesFilter(chip.dataset.filter));
+els.editForm.addEventListener("submit", saveEdit);
+els.editCancelBtn.addEventListener("click", closeEditor);
+els.editType.addEventListener("change", updateEditorForType);
+els.editProject.addEventListener("change", onEditProjectChange);
+els.editDue.addEventListener("input", onEditDueChange);
+els.editDue.addEventListener("change", onEditDueChange);
+els.editClearDue.addEventListener("click", () => {
+  els.editDue.value = "";
+  onEditDueChange();
+});
+els.editDeleteBtn.addEventListener("click", askDeleteItem);
+els.editDeleteYesBtn.addEventListener("click", confirmDeleteItem);
+els.editDeleteNoBtn.addEventListener("click", cancelDeleteItem);
+els.editDialog.addEventListener("close", () => { editState = null; }); // also covers Escape
+// Tapping the backdrop closes the editor (the dialog itself has no padding, so only the backdrop hits it).
+els.editDialog.addEventListener("click", (e) => { if (e.target === els.editDialog) closeEditor(); });
 
 // Load the next History page automatically when "Load more" scrolls into view.
 if ("IntersectionObserver" in window) {

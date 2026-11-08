@@ -12,7 +12,7 @@
 // The stream lets the page say "Gemini is busy, retrying…" while the function waits.
 
 import { buildPrompt, todayIn, USER_CONTEXT } from "../prompt.js";
-import { jsonError } from "../_lib/http.js";
+import { jsonError, isCalendarDate } from "../_lib/http.js";
 import { saveDump } from "../_lib/db.js";
 
 // Current stable Gemini Flash model with audio input and a free tier
@@ -381,11 +381,4 @@ function optionalString(value, label) {
   if (typeof value !== "string") throw new Error(`${label} is not a string or null`);
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
-}
-
-// "2026-11-12" → true; "2026-02-30", "12/11/2026", "soon" → false.
-function isCalendarDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
