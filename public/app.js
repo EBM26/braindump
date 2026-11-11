@@ -3,6 +3,7 @@
 // ---------- Config ----------
 
 const MAX_SECONDS = 10 * 60; // recording cap; auto-stop here
+const CONFIRM_CANCEL_AFTER_SEC = 10; // cancelling a longer recording asks first
 // Generous: the server may retry Gemini 3 times (waiting ~17s in total) and then try a fallback model.
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -37,6 +38,7 @@ const els = {
   recordBtn: $("recordBtn"),
   status: $("status"),
   timer: $("timer"),
+  cancelRecBtn: $("cancelRecBtn"),
   spinner: $("spinner"),
   error: $("error"),
   errorMessage: $("errorMessage"),
@@ -98,6 +100,15 @@ const els = {
   loginError: $("loginError"),
   loginBtn: $("loginBtn"),
   logoutBtn: $("logoutBtn"),
+  selectBtns: { tasks: $("tasksSelectBtn"), notes: $("notesSelectBtn"), detail: $("detailSelectBtn") },
+  selectBar: $("selectBar"),
+  selectCount: $("selectCount"),
+  selectAllBtn: $("selectAllBtn"),
+  selectCopyBtn: $("selectCopyBtn"),
+  selectDoneBtn: $("selectDoneBtn"),
+  copyDialog: $("copyDialog"),
+  copyText: $("copyText"),
+  copyCloseBtn: $("copyCloseBtn"),
 };
 
 // ---------- State (memory only, except the password — see "Password gate") ----------
@@ -146,20 +157,23 @@ async function startRecording() {
   const options = { audioBitsPerSecond: 64000 };
   if (format) options.mimeType = format.record;
 
+  let recorder;
   try {
-    mediaRecorder = new MediaRecorder(stream, options);
+    recorder = new MediaRecorder(stream, options);
   } catch {
-    mediaRecorder = new MediaRecorder(stream); // browser default; converted to WAV later if needed
+    recorder = new MediaRecorder(stream); // browser default; converted to WAV later if needed
   }
+  mediaRecorder = recorder;
 
   chunks = [];
   pending = null;
   lastResult = null;
-  mediaRecorder.addEventListener("dataavailable", (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
+  // Both listeners ignore this recorder once it's no longer the current one (i.e. it was cancelled).
+  recorder.addEventListener("dataavailable", (e) => {
+    if (recorder === mediaRecorder && e.data && e.data.size > 0) chunks.push(e.data);
   });
-  mediaRecorder.addEventListener("stop", onRecordingStopped, { once: true });
-  mediaRecorder.start(1000);
+  recorder.addEventListener("stop", () => { if (recorder === mediaRecorder) onRecordingStopped(); }, { once: true });
+  recorder.start(1000);
 
   startedAt = Date.now();
   timerId = setInterval(tick, 250);
@@ -169,6 +183,31 @@ async function startRecording() {
 
 function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+}
+
+// Stop without saving: release the mic, drop the audio, back to idle. Nothing is uploaded.
+function cancelRecording() {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  const elapsed = (Date.now() - startedAt) / 1000;
+  if (elapsed > CONFIRM_CANCEL_AFTER_SEC && !window.confirm("Discard this recording?")) return;
+  // The 10-minute cap may have stopped it while the question was open; then it's already processing.
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  discardRecording();
+}
+
+function discardRecording() {
+  const recorder = mediaRecorder;
+  clearInterval(timerId);
+  timerId = null;
+  // Detach first: the recorder's "stop" and final "dataavailable" events are now ignored, so no upload.
+  mediaRecorder = null;
+  chunks = [];
+  pending = null;
+  try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch { /* already stopped */ }
+  // Stopping every track turns off the microphone (and the iPhone's mic indicator).
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  setView("idle");
 }
 
 function tick() {
@@ -409,7 +448,8 @@ function renderSections(container, data, editorFor = null) {
       const li = document.createElement("li");
       if (item.done) li.className = "task--done";
       const content = itemContent(item);
-      li.append(editorFor ? editButton(item, content, editorFor(item)) : content);
+      if (editorFor && isSelecting("detail")) li.append(selectButton(item, content));
+      else li.append(editorFor ? editButton(item, content, editorFor(item)) : content);
       ul.append(li);
     }
     sec.append(ul);
@@ -544,6 +584,7 @@ function setView(view, statusText) {
   els.recordBtn.setAttribute("aria-label", recording ? "Stop recording" : "Start recording");
   els.recordBtn.hidden = view === "result";
   els.timer.hidden = !recording;
+  els.cancelRecBtn.hidden = !recording;
   els.spinner.hidden = !processing;
 
   els.status.hidden = view === "result";
@@ -604,6 +645,7 @@ function setMessage(el, text, isError = false) {
 // ---------- Tabs ----------
 
 function showTab(name) {
+  exitSelection();
   for (const btn of els.tabButtons) {
     if (btn.dataset.tab === name) btn.setAttribute("aria-current", "page");
     else btn.removeAttribute("aria-current");
@@ -635,6 +677,7 @@ async function loadTasks() {
     if (requestId !== tasksRequestId) return; // a newer load replaced this one
     tasksState = data;
     renderTasks();
+    updateSelectBar();
   } catch (err) {
     if (err instanceof AuthError || requestId !== tasksRequestId) return;
     setMessage(els.tasksMessage, `Couldn't load tasks: ${err.message}`, true);
@@ -666,6 +709,11 @@ function renderTasks() {
 function taskRow(task, today) {
   const row = document.createElement("div");
   row.className = task.done ? "task task--done" : "task";
+
+  if (isSelecting("tasks")) {
+    row.append(selectButton(task, itemContent(task, { today, showProject: false })));
+    return row;
+  }
 
   // The checkbox has its own (larger) tap area; tapping the text opens the editor.
   const check = document.createElement("label");
@@ -733,22 +781,29 @@ async function loadNotes() {
     if (requestId !== notesRequestId) return;
     notesState.notes = data.notes;
     renderNotes();
+    updateSelectBar();
   } catch (err) {
     if (err instanceof AuthError || requestId !== notesRequestId) return;
     setMessage(els.notesMessage, `Couldn't load notes: ${err.message}`, true);
   }
 }
 
+function visibleNotes() {
+  const { filter } = notesState;
+  return notesState.notes.filter((n) => filter === "all" || n.type === filter);
+}
+
 function setNotesFilter(filter) {
   notesState.filter = filter;
   for (const chip of els.noteChips) chip.setAttribute("aria-pressed", String(chip.dataset.filter === filter));
   renderNotes();
+  updateSelectBar();
 }
 
 // Newest first, grouped by project like Tasks (alphabetical, "Other" last).
 function renderNotes() {
   const { filter } = notesState;
-  const notes = notesState.notes.filter((n) => filter === "all" || n.type === filter);
+  const notes = visibleNotes();
   els.notesList.replaceChildren();
   if (!notes.length) {
     const empty = { all: "No ideas, open questions or notes yet.", idea: "No ideas yet.",
@@ -769,7 +824,7 @@ function renderNotes() {
     for (const note of group) {
       const li = document.createElement("li");
       const content = itemContent(note, { showProject: false, showType: filter === "all", showDate: true });
-      li.append(editButton(note, content, noteEditHandlers(note)));
+      li.append(isSelecting("notes") ? selectButton(note, content) : editButton(note, content, noteEditHandlers(note)));
       ul.append(li);
     }
     sec.append(heading, ul);
@@ -892,12 +947,16 @@ function formatDateTime(iso) {
 }
 
 function showHistoryList() {
+  exitSelection();
   currentDump = null;
   els.dumpDetail.hidden = true;
   els.historyListView.hidden = false;
 }
 
 async function openDump(id) {
+  exitSelection();
+  currentDump = null;
+  els.selectBtns.detail.hidden = true;
   els.historyListView.hidden = true;
   els.dumpDetail.hidden = false;
   els.detailBody.replaceChildren();
@@ -923,6 +982,7 @@ async function openDump(id) {
     els.detailTranscriptBox.open = false;
     els.detailTranscriptBox.hidden = false;
     els.deleteBtn.hidden = false;
+    els.selectBtns.detail.hidden = false;
   } catch (err) {
     if (err instanceof AuthError) return;
     setMessage(els.detailMessage, `Couldn't open this dump: ${err.message}`, true);
@@ -980,6 +1040,153 @@ async function confirmDelete() {
 function cancelDelete() {
   els.deleteConfirm.hidden = true;
   els.deleteBtn.hidden = false;
+}
+
+// ---------- Selection mode (select items and copy them) ----------
+// Tasks, Notes and the dump detail each have a Select button. In selection mode, tapping a row
+// toggles it (no editor, no done checkbox) and a bar offers Select all / Copy / Done.
+
+let selection = null; // { view: "tasks" | "notes" | "detail", ids: Set<item id> }
+const COPY_PREFIX = { task: "", idea: "Idea: ", open_question: "Question: ", note: "Note: " };
+const TYPE_ORDER = SECTIONS.map((s) => s.type);
+let copyFeedbackTimer = null;
+
+function isSelecting(view) {
+  return !!selection && selection.view === view;
+}
+
+// The view's items in on-screen order (what "Select all" and the count work from).
+function visibleItemsFor(view) {
+  const flat = (groups) => groups.flatMap(([, items]) => items);
+  if (view === "tasks") return flat(groupByProject(tasksState.tasks));
+  if (view === "notes") return flat(groupByProject(visibleNotes()));
+  if (view === "detail") return currentDump ? SECTIONS.flatMap((s) => currentDump[s.key]) : [];
+  return [];
+}
+
+function rerenderView(view) {
+  if (view === "tasks") renderTasks();
+  else if (view === "notes") renderNotes();
+  else if (view === "detail" && currentDump) renderSections(els.detailBody, currentDump, detailEditHandlers);
+}
+
+function enterSelection(view) {
+  closeEditor();
+  selection = { view, ids: new Set() };
+  rerenderView(view);
+  updateSelectBar();
+}
+
+// Leaving selection mode always clears the selection.
+function exitSelection() {
+  if (!selection) return;
+  const { view } = selection;
+  selection = null;
+  rerenderView(view);
+  updateSelectBar();
+}
+
+function selectedItems() {
+  if (!selection) return [];
+  return visibleItemsFor(selection.view).filter((item) => selection.ids.has(item.id));
+}
+
+function updateSelectBar() {
+  document.body.classList.toggle("is-selecting", !!selection);
+  els.selectBtns.tasks.hidden = isSelecting("tasks");
+  els.selectBtns.notes.hidden = isSelecting("notes");
+  // The detail Select button only shows once a dump has loaded.
+  els.selectBtns.detail.hidden = isSelecting("detail") || !currentDump;
+  els.selectBar.hidden = !selection;
+  if (!selection) return;
+  const count = selectedItems().length;
+  const total = visibleItemsFor(selection.view).length;
+  els.selectCount.textContent = `${count} selected`;
+  els.selectCopyBtn.disabled = count === 0;
+  els.selectAllBtn.disabled = total === 0;
+  els.selectAllBtn.textContent = total > 0 && count === total ? "Select none" : "Select all";
+}
+
+function selectButton(item, content) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "item-edit item-select";
+  btn.setAttribute("aria-pressed", String(selection.ids.has(item.id)));
+  const mark = document.createElement("span");
+  mark.className = "select-mark";
+  mark.setAttribute("aria-hidden", "true");
+  btn.append(mark, content);
+  btn.addEventListener("click", () => {
+    if (!selection) return;
+    const on = !selection.ids.has(item.id);
+    if (on) selection.ids.add(item.id);
+    else selection.ids.delete(item.id);
+    btn.setAttribute("aria-pressed", String(on));
+    updateSelectBar();
+  });
+  return btn;
+}
+
+function toggleSelectAll() {
+  if (!selection) return;
+  const items = visibleItemsFor(selection.view);
+  const allSelected = items.length > 0 && items.every((item) => selection.ids.has(item.id));
+  selection.ids = allSelected ? new Set() : new Set(items.map((item) => item.id));
+  rerenderView(selection.view);
+  updateSelectBar();
+}
+
+// Plain text grouped by project (alphabetical, "Other" last), then by type, keeping screen order within each.
+function selectionAsText(items) {
+  const blocks = [];
+  for (const [project, group] of groupByProject(items)) {
+    const lines = [project || "Other"];
+    for (const type of TYPE_ORDER) {
+      for (const item of group.filter((i) => i.type === type)) {
+        let line = `- ${COPY_PREFIX[item.type]}${item.text}`;
+        if (item.type === "task") {
+          if (item.due_date) line += ` (due ${formatMonthDay(item.due_date)})`;
+          else if (item.due_text) line += ` (due ${item.due_text})`;
+          if (item.done) line += " (done)";
+        }
+        lines.push(line);
+      }
+    }
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+
+function formatMonthDay(isoDate) {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// Called straight from the tap: iOS only allows clipboard writes inside the user gesture,
+// so nothing is awaited before writeText.
+function copySelection() {
+  const items = selectedItems();
+  if (!items.length) return;
+  const text = selectionAsText(items);
+  if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+    showCopyFallback(text);
+    return;
+  }
+  navigator.clipboard.writeText(text).then(
+    () => {
+      els.selectCopyBtn.textContent = "Copied";
+      clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer = setTimeout(() => { els.selectCopyBtn.textContent = "Copy"; }, 1500);
+    },
+    () => showCopyFallback(text),
+  );
+}
+
+function showCopyFallback(text) {
+  els.copyText.value = text;
+  if (!els.copyDialog.open) els.copyDialog.showModal();
+  els.copyText.focus();
+  els.copyText.setSelectionRange(0, text.length);
 }
 
 // ---------- Item editor ----------
@@ -1216,6 +1423,8 @@ function logOut() {
   setView("idle");
   // Don't leave saved data on screen after logging out.
   closeEditor();
+  exitSelection();
+  if (els.copyDialog.open) els.copyDialog.close();
   tasksState = { tasks: [], today: "" };
   els.tasksList.replaceChildren();
   notesState = { notes: [], filter: "all" };
@@ -1236,6 +1445,7 @@ els.recordBtn.addEventListener("click", () => {
   if (mediaRecorder && mediaRecorder.state === "recording") stopRecording();
   else startRecording();
 });
+els.cancelRecBtn.addEventListener("click", cancelRecording);
 els.retryBtn.addEventListener("click", send);
 els.discardBtn.addEventListener("click", () => { pending = null; setView("idle"); });
 els.copyBtn.addEventListener("click", copyAll);
@@ -1264,6 +1474,13 @@ els.editDeleteNoBtn.addEventListener("click", cancelDeleteItem);
 els.editDialog.addEventListener("close", () => { editState = null; }); // also covers Escape
 // Tapping the backdrop closes the editor (the dialog itself has no padding, so only the backdrop hits it).
 els.editDialog.addEventListener("click", (e) => { if (e.target === els.editDialog) closeEditor(); });
+
+for (const [view, btn] of Object.entries(els.selectBtns)) btn.addEventListener("click", () => enterSelection(view));
+els.selectAllBtn.addEventListener("click", toggleSelectAll);
+els.selectCopyBtn.addEventListener("click", copySelection);
+els.selectDoneBtn.addEventListener("click", exitSelection);
+els.copyCloseBtn.addEventListener("click", () => els.copyDialog.close());
+els.copyDialog.addEventListener("click", (e) => { if (e.target === els.copyDialog) els.copyDialog.close(); });
 
 // Load the next History page automatically when "Load more" scrolls into view.
 if ("IntersectionObserver" in window) {

@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Brain Dump</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -33,6 +36,7 @@
       </button>
       <p class="recorder__status" id="status">Tap to record</p>
       <p class="recorder__timer" id="timer" hidden>0:00 <span class="muted">/ 10:00</span></p>
+      <button type="button" class="btn" id="cancelRecBtn" hidden>Cancel</button>
       <div class="spinner" id="spinner" hidden aria-hidden="true"></div>
     </section>
 
@@ -65,9 +69,12 @@
     <div class="view" id="view-tasks" hidden>
       <div class="view-header">
         <h2 class="view-title">Tasks</h2>
-        <label class="toggle">
-          <input type="checkbox" id="showCompleted"> Show completed
-        </label>
+        <div class="view-header__tools">
+          <label class="toggle">
+            <input type="checkbox" id="showCompleted"> Show completed
+          </label>
+          <button type="button" class="btn btn--small" id="tasksSelectBtn">Select</button>
+        </div>
       </div>
       <p class="view-message" id="tasksMessage" role="status" hidden></p>
       <div id="tasksList"></div>
@@ -75,7 +82,10 @@
 
     <!-- ===== Notes view (ideas, open questions, notes) ===== -->
     <div class="view" id="view-notes" hidden>
-      <div class="view-header"><h2 class="view-title">Notes</h2></div>
+      <div class="view-header">
+        <h2 class="view-title">Notes</h2>
+        <button type="button" class="btn btn--small" id="notesSelectBtn">Select</button>
+      </div>
       <div class="chips" role="group" aria-label="Show">
         <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
         <button type="button" class="chip" data-filter="idea" aria-pressed="false">Ideas</button>
@@ -98,6 +108,7 @@
       <div id="dumpDetail" hidden>
         <div class="view-header">
           <button type="button" class="link-btn" id="backBtn">‹ History</button>
+          <button type="button" class="btn btn--small" id="detailSelectBtn" hidden>Select</button>
         </div>
         <p class="detail-meta" id="detailMeta"></p>
         <p class="view-message" id="detailMessage" role="status" hidden></p>
@@ -117,6 +128,14 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ===== Selection bar (Tasks, Notes and dump detail in selection mode) ===== -->
+    <div class="select-bar" id="selectBar" role="toolbar" aria-label="Selection" hidden>
+      <span class="select-bar__count" id="selectCount" role="status">0 selected</span>
+      <button type="button" class="btn btn--small" id="selectAllBtn">Select all</button>
+      <button type="button" class="btn btn--small btn--primary" id="selectCopyBtn">Copy</button>
+      <button type="button" class="btn btn--small" id="selectDoneBtn">Done</button>
     </div>
 
     <!-- ===== Bottom tab bar ===== -->
@@ -178,6 +197,18 @@
         </div>
       </div>
     </form>
+  </dialog>
+
+  <!-- Shown when the clipboard API isn't available: the text to copy by hand -->
+  <dialog class="sheet" id="copyDialog" aria-labelledby="copyTitle">
+    <div class="form">
+      <h2 class="sheet__title" id="copyTitle">Copy these items</h2>
+      <p class="field__hint">Couldn't copy automatically. Select the text and copy it.</p>
+      <textarea class="field__input copy-text" id="copyText" dir="auto" rows="10" readonly></textarea>
+      <div class="actions">
+        <button type="button" class="btn btn--primary" id="copyCloseBtn">Close</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="app.js"></script>
